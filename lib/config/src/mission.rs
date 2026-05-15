@@ -94,7 +94,6 @@ impl MissionAssets {
                     .description_key = Some(key.clone());
                 continue;
             }
-            // quest _description keys fall through to parse_quest_key below
 
             let Some((mission_id, quest_definition)) = parse_quest_key(&key) else {
                 continue;
@@ -115,9 +114,13 @@ impl MissionAssets {
                 .iter_mut()
                 .find(|quest| quest.quest_id == quest_definition.quest_id)
             {
-                Some(existing) => existing
-                    .objective_keys
-                    .push(key.strip_suffix("_description").unwrap_or(&key).to_string()),
+                Some(existing) => {
+                    for key in &quest_definition.objective_keys {
+                        if !existing.objective_keys.contains(key) {
+                            existing.objective_keys.push(key.clone());
+                        }
+                    }
+                }
                 None => mission.quests.push(quest_definition),
             }
         }
@@ -248,7 +251,9 @@ fn parse_quest_key(key: &str) -> Option<(String, QuestDefinition)> {
     let (ordinal_text, _) = tail.split_once("_obj_")?;
     let mission_id = mission_prefix.to_string();
     let quest_id = format!("{mission_prefix}_q#{ordinal_text}");
-    let condition_id = key.strip_suffix("_description").unwrap_or(key).to_string();
+
+    // The conditionId in the packet is the ordinal (e.g. "2", "3" for e0m1)
+    let condition_id = ordinal_text.to_string();
 
     Some((
         mission_id,

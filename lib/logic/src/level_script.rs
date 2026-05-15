@@ -39,6 +39,8 @@ struct ScriptRuntimeState {
     state: LevelScriptState,
     properties: HashMap<String, DynamicParameter>,
     committed_cache_steps: u32,
+    consumed_progression_flags: BTreeSet<String>,
+    consumed_server_events: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +81,8 @@ impl LevelScriptManager {
                     state: initial_state,
                     properties: lv_props_to_map(&script.properties),
                     committed_cache_steps: 0,
+                    consumed_progression_flags: BTreeSet::new(),
+                    consumed_server_events: BTreeSet::new(),
                 });
         }
     }
@@ -108,6 +112,8 @@ impl LevelScriptManager {
                         state: script_initial_state(script, scene_name),
                         properties: lv_props_to_map(&script.properties),
                         committed_cache_steps: 0,
+                        consumed_progression_flags: BTreeSet::new(),
+                        consumed_server_events: BTreeSet::new(),
                     });
 
                 LevelScriptInfo {
@@ -165,6 +171,227 @@ impl LevelScriptManager {
         let runtime = scene.entry(script_id).or_default();
         runtime.committed_cache_steps = runtime.committed_cache_steps.saturating_add(1);
         self.set_state(scene_name, script_id, LevelScriptState::Enabled)
+    }
+
+    /// Mark a progression flag as consumed for this session.
+    ///
+    /// Returns `true` if the flag was **not** previously consumed, the caller
+    /// should advance the quest one step.  Returns `false` if the flag was
+    /// already consumed, skip advancement.  This prevents:
+    ///
+    /// * Reconnect replays: client re-sends the same property packet.
+    /// * Same-chain cascades: two `SetBool` actions in a single action-graph
+    ///   chain both set progression flags, generating two property-update
+    ///   packets for one player event (e.g. `isWalkLimitFinish` → `is_G_Ob_Over`).
+    pub fn try_consume_progression_flag(
+        &mut self,
+        scene_name: &str,
+        script_id: i32,
+        flag_key: &str,
+    ) -> bool {
+        let scene = self
+            .runtime_by_scene
+            .entry(scene_name.to_string())
+            .or_default();
+        let runtime = scene.entry(script_id).or_default();
+        // BTreeSet::insert returns true iff the value was not already present.
+        runtime
+            .consumed_progression_flags
+            .insert(flag_key.to_string())
+    }
+
+    /// Guard against duplicate `TriggerServerEvent` packets for the same
+    /// (script_id, event_name) pair.
+    ///
+    /// Returns `true` on the **first** call (caller should process), `false`
+    /// on subsequent calls (caller should skip).
+    pub fn try_consume_server_event(
+        &mut self,
+        scene_name: &str,
+        script_id: i32,
+        event_name: &str,
+    ) -> bool {
+        let scene = self
+            .runtime_by_scene
+            .entry(scene_name.to_string())
+            .or_default();
+        let runtime = scene.entry(script_id).or_default();
+        runtime
+            .consumed_server_events
+            .insert(event_name.to_string())
+    }
+
+    /// Scan every `Enabled` script in the scene and activate any that:
+    ///
+    /// 1. Have at least one `startShape` whose bounding sphere contains
+    ///    `player_pos` — i.e. the player is inside the activation zone but no
+    ///    proximity-entry edge fired (already inside when eligible).
+    /// 2. Have an `OnScriptStart` header at root position (`_ID = 0`).
+    /// 3. Pass their `OnScriptStart` validate condition given the script's
+    ///    currently-stored properties (prevents re-running scripts that have
+    ///    already set their `isOver` flag).
+    ///
+    /// Returns the list of script IDs that were newly set to `Active`.
+    ///
+    /// Call this after any server-side scene event (`TriggerServerEvent`,
+    /// script deactivation, quest-state change) so that companion scripts
+    /// whose proximity edge was missed are caught without any hardcoded
+    /// event-name → script-ID mapping.
+    pub fn activate_eligible_proximate_scripts(
+        &mut self,
+        scene_name: &str,
+        player_pos: (f32, f32, f32),
+        assets: &BeyondAssets,
+    ) -> Vec<i32> {
+        self.sync_scene(scene_name, assets);
+        let mut newly_activated = Vec::new();
+
+        for script in assets.level_data.level_scripts(scene_name) {
+            let script_id = script.script_id as i32;
+
+            // Only consider scripts that are Enabled (not Active, not Disabled).
+            if self.get_state(scene_name, script_id) != LevelScriptState::Enabled {
+                continue;
+            }
+
+            // Must have at least one startShape that contains the player.
+            // In activate_eligible_proximate_scripts, replace the in_zone check:
+            let in_zone = script
+                .start_shapes
+                .iter()
+                .any(|shape| shape_contains_point(shape, player_pos))
+                || script
+                    .active_shapes
+                    .iter()
+                    .any(|shape| shape_contains_point(shape, player_pos));
+            if !in_zone {
+                continue;
+            }
+
+            // Parse the action map once to check OnScriptStart eligibility.
+            let Some(am_str) = script.embedded_action_map.as_deref() else {
+                continue;
+            };
+            let Ok(am) = serde_json::from_str::<serde_json::Value>(am_str) else {
+                continue;
+            };
+            let Some(data_map) = am.get("dataMap") else {
+                continue;
+            };
+            let headers = data_map
+                .get("headerList")
+                .and_then(|v| v.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let getters = data_map
+                .get("getterList")
+                .and_then(|v| v.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+
+            if !has_root_on_script_start(headers) {
+                continue;
+            }
+
+            // Evaluate the OnScriptStart validate against stored properties.
+            let stored_props = self
+                .runtime_by_scene
+                .get(scene_name)
+                .and_then(|s| s.get(&script_id))
+                .map(|r| &r.properties);
+
+            if !on_script_start_validate_passes(headers, getters, stored_props) {
+                continue;
+            }
+
+            if self
+                .set_state(scene_name, script_id, LevelScriptState::Active)
+                .is_some()
+            {
+                newly_activated.push(script_id);
+            }
+        }
+
+        newly_activated
+    }
+
+    pub fn activate_server_triggered_scripts(
+        &mut self,
+        scene_name: &str,
+        assets: &BeyondAssets,
+    ) -> Vec<i32> {
+        self.sync_scene(scene_name, assets);
+        let mut newly_activated = Vec::new();
+
+        for script in assets.level_data.level_scripts(scene_name) {
+            let script_id = script.script_id as i32;
+
+            if self.get_state(scene_name, script_id) != LevelScriptState::Enabled {
+                continue;
+            }
+
+            // Only shape-less scripts, spatial ones are handled by the client
+            // or by activate_eligible_proximate_scripts.
+            if !script.start_shapes.is_empty() || !script.active_shapes.is_empty() {
+                continue;
+            }
+
+            let Some(am_str) = script.embedded_action_map.as_deref() else {
+                continue;
+            };
+            let Ok(am) = serde_json::from_str::<serde_json::Value>(am_str) else {
+                continue;
+            };
+            let Some(data_map) = am.get("dataMap") else {
+                continue;
+            };
+            let headers = data_map
+                .get("headerList")
+                .and_then(|v| v.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+
+            // Must have OnScriptActive at root (_ID = 0).
+            let has_on_active = headers.iter().any(|h| {
+                short_trigger_name(h.get("$type").and_then(|v| v.as_str()).unwrap_or_default())
+                    == "OnScriptActive"
+                    && h.get("_ID").and_then(|v| v.as_i64()) == Some(0)
+            });
+            if !has_on_active {
+                continue;
+            }
+
+            // Skip scripts that have already completed (isOver = true).
+            let stored_props = self
+                .runtime_by_scene
+                .get(scene_name)
+                .and_then(|s| s.get(&script_id))
+                .map(|r| &r.properties);
+            if let Some(props) = stored_props {
+                if let Some(is_over) = props.get("isOver") {
+                    if is_over.value_bool_list.first().copied().unwrap_or(false) {
+                        continue;
+                    }
+                }
+            }
+
+            if self
+                .set_state(scene_name, script_id, LevelScriptState::Active)
+                .is_some()
+            {
+                newly_activated.push(script_id);
+            }
+        }
+
+        newly_activated
+    }
+
+    fn get_state(&self, scene_name: &str, script_id: i32) -> LevelScriptState {
+        self.runtime_by_scene
+            .get(scene_name)
+            .and_then(|s| s.get(&script_id))
+            .map(|r| r.state)
+            .unwrap_or_default()
     }
 
     pub fn on_custom_event(
@@ -287,7 +514,7 @@ impl LevelScriptManager {
 fn script_initial_state(script: &LvLevelScript, scene_name: &str) -> LevelScriptState {
     let script_id = script.script_id as i32;
     match (scene_name, script_id) {
-        /*("map01_dg003", 5) => LevelScriptState::Active,*/
+        ("map01_dg003", 5) => LevelScriptState::Active,
         ("map01_dg003", 19) => LevelScriptState::Active,
         ("map01_lv001", 70001) => LevelScriptState::Active,
         ("map01_lv001", 70010) => LevelScriptState::Active,
@@ -402,6 +629,119 @@ fn build_trigger_set(script: &LvLevelScript) -> ScriptTriggerSet {
     ScriptTriggerSet {
         initial_state,
         triggers,
+    }
+}
+
+/// Point-in-zone test using the shape's `radius` field as a bounding sphere.
+///
+/// We use `radius` regardless of `shape_type` because:
+/// - It is always present and represents the shape's outer extent.
+/// - For proximity-activation purposes an inclusive sphere is correct: if the
+///   player is within `radius` units of the shape centre they are "in the
+///   zone".  This may be slightly generous for OBB shapes, but it is never
+///   incorrectly exclusive.
+fn shape_contains_point(shape: &config::tables::level_data::LvShape, pos: (f32, f32, f32)) -> bool {
+    let dx = pos.0 - shape.offset.x;
+    let dy = pos.1 - shape.offset.y;
+    let dz = pos.2 - shape.offset.z;
+    dx * dx + dy * dy + dz * dz <= shape.radius * shape.radius
+}
+
+/// Returns `true` if the script's root `OnScriptStart` header has no validate
+/// condition, or if the validate evaluates to `true` given `stored_props`.
+///
+/// Only called for scripts where `has_root_on_script_start` already returned
+/// `true`, so the header is guaranteed to exist.
+fn on_script_start_validate_passes(
+    headers: &[serde_json::Value],
+    getters: &[serde_json::Value],
+    stored_props: Option<&std::collections::HashMap<String, DynamicParameter>>,
+) -> bool {
+    let Some(header) = headers.iter().find(|h| {
+        short_trigger_name(h.get("$type").and_then(|v| v.as_str()).unwrap_or_default())
+            == "OnScriptStart"
+            && h.get("_ID").and_then(|v| v.as_i64()) == Some(0)
+    }) else {
+        return true;
+    };
+
+    let Some(validate) = header.get("_validate") else {
+        return true;
+    };
+    let Some(id_ref) = validate.get("idRef").and_then(|v| v.as_i64()) else {
+        return true;
+    };
+
+    eval_getter(id_ref as i32, getters, stored_props)
+}
+
+/// Returns `true` if there is an `OnScriptStart` header at root position
+/// (`_ID = 0`), meaning the script can start without any prior sequencing.
+fn has_root_on_script_start(headers: &[serde_json::Value]) -> bool {
+    headers.iter().any(|h| {
+        short_trigger_name(h.get("$type").and_then(|v| v.as_str()).unwrap_or_default())
+            == "OnScriptStart"
+            && h.get("_ID").and_then(|v| v.as_i64()) == Some(0)
+    })
+}
+
+/// Evaluate a getter by its `_ID`, returning the boolean result.
+///
+/// Handles the two patterns seen across all map01_dg003 scripts:
+///
+/// | Getter type        | Meaning                                              |
+/// |--------------------|------------------------------------------------------|
+/// | `BoolGetter`       | Reads `self_bb.<key>` from stored properties         |
+/// | `BoolGetterInvert` | Negates an inner getter identified by explicit idRef |
+/// |                    | (or by `_ID - 1` when paramSource = -1, no idRef)   |
+///
+/// Unknown getter types conservatively return `true` (allow activation).
+fn eval_getter(
+    id: i32,
+    getters: &[serde_json::Value],
+    props: Option<&std::collections::HashMap<String, DynamicParameter>>,
+) -> bool {
+    let Some(getter) = getters
+        .iter()
+        .find(|g| g.get("_ID").and_then(|v| v.as_i64()) == Some(id as i64))
+    else {
+        return true;
+    };
+
+    let getter_type = short_trigger_name(
+        getter
+            .get("$type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+    );
+
+    match getter_type {
+        "BoolGetter" => {
+            let path = getter
+                .get("_value")
+                .and_then(|v| v.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if let Some(key) = path.strip_prefix("self_bb.") {
+                props
+                    .and_then(|p| p.get(key))
+                    .and_then(|p| p.value_bool_list.first().copied())
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        }
+        "BoolGetterInvert" => {
+            // Explicit idRef takes precedence; fall back to ID-1 for the
+            // paramSource=-1 ("previous result") implicit-chain pattern.
+            let inner_id = getter
+                .get("_value")
+                .and_then(|v| v.get("idRef"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(id as i64 - 1);
+            !eval_getter(inner_id as i32, getters, props)
+        }
+        _ => true,
     }
 }
 

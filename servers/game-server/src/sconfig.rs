@@ -3,6 +3,7 @@ use perlica_logic::player::WorldState;
 use serde::Deserialize;
 use std::path::PathBuf;
 use tracing::error;
+
 static DEFAULT_CONFIG: &str = include_str!("../config.default.toml");
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +35,14 @@ pub struct AssetsConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct DefaultTeamConfig {
-    pub team: [String; 4],
+    pub team: Vec<String>,
+}
+
+impl DefaultTeamConfig {
+    pub fn members(&self) -> &[String] {
+        let count = self.team.len().min(4);
+        &self.team[..count]
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -61,7 +69,6 @@ impl MuipGmConfig {
     pub fn addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
-
     fn default_host() -> String {
         "127.0.0.1".to_owned()
     }
@@ -78,7 +85,6 @@ impl Config {
         let path = std::env::args()
             .nth(1)
             .unwrap_or_else(|| "Config.toml".to_owned());
-
         if !std::path::Path::new(&path).exists() {
             std::fs::write(&path, DEFAULT_CONFIG).map_err(|e| ServerError::ConfigRead {
                 path: path.clone(),
@@ -89,12 +95,10 @@ impl Config {
             );
             std::process::exit(0);
         }
-
         let contents = std::fs::read_to_string(&path).map_err(|e| ServerError::ConfigRead {
             path: path.clone(),
             source: e,
         })?;
-
         Ok(toml::from_str(&contents)?)
     }
 }

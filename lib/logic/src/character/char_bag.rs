@@ -124,7 +124,7 @@ pub struct TeamSyncState {
 }
 
 impl CharBag {
-    pub fn new(assets: &BeyondAssets, default_team: &[String; 4]) -> Result<Self> {
+    pub fn new(assets: &BeyondAssets, default_team: &[String]) -> Result<Self> {
         let own_time = common::time::now_ms() as i64;
         let mut bag = Self {
             item_manager: ItemManager::init_for_new_player(assets, own_time),

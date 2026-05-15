@@ -10,7 +10,6 @@ use tracing::error;
 
 pub const PROLOGUE_MISSION_ID: &str = "mission_mai_e0m1";
 pub const PROLOGUE_FIRST_QUEST_ID: &str = "mission_mai_e0m1_q#2";
-const OBJECTIVE_PROGRESS_KEY: &str = "progress";
 const GUIDE_STATE_COMPLETED: i32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,7 +151,7 @@ impl MissionManager {
                     self.current_quests
                         .insert(quest.quest_id.clone(), quest_progress);
                     successfully_inserted = true;
-                    break; // Successfully got one and "sent" it to state, stop looking
+                    break;
                 }
             }
         }
@@ -232,7 +231,7 @@ impl MissionManager {
             let next_value = if op.is_add {
                 objective
                     .values
-                    .get(OBJECTIVE_PROGRESS_KEY)
+                    .get(&op.condition_id)
                     .copied()
                     .unwrap_or_default()
                     .saturating_add(op.value)
@@ -240,9 +239,7 @@ impl MissionManager {
                 op.value
             };
 
-            objective
-                .values
-                .insert(OBJECTIVE_PROGRESS_KEY.to_string(), next_value);
+            objective.values.insert(op.condition_id.clone(), next_value);
             objective.is_complete = next_value > 0;
         }
 
@@ -324,6 +321,49 @@ impl MissionManager {
             Some((mission_id, String::new()))
         }
     }
+
+    /// Advance the *currently tracked* quest by completing its next pending
+    /// objective. Used by server-authoritative progression sources such as
+    /// level-script property flips and custom-event triggers (the prologue
+    /// flow flags `isTimelineOver`, `isWalkLimitFinish`, …, never send a
+    /// CsUpdateQuestObjective, the server has to push the step itself).
+    ///
+    /// Returns the same MissionUpdate shape `apply_objective_ops` produces, so
+    /// the handler can re-use the existing notify plumbing.
+    pub fn advance_tracked_quest_step(
+        &mut self,
+        mission_assets: &MissionAssets,
+        role_base_info: Option<RoleBaseInfo>,
+    ) -> MissionUpdate {
+        // Pick the live quest belonging to the currently tracked mission.
+        let track_mission = self.track_mission_id.clone();
+        let Some((quest_id, condition_id)) = self
+            .current_quests
+            .iter()
+            .find(|(qid, q)| {
+                qid.starts_with(&track_mission)
+                    && q.quest_state == QuestState::Qsprocessing
+                    && q.objectives.values().any(|o| !o.is_complete)
+            })
+            .and_then(|(qid, q)| {
+                q.objectives
+                    .values()
+                    .find(|o| !o.is_complete)
+                    .map(|o| (qid.clone(), o.condition_id.clone()))
+            })
+        else {
+            return MissionUpdate::default();
+        };
+
+        // Re-use the existing op pipeline so state/mission advancement,
+        // notify packets, and follow-up quest bootstrap all stay in one place.
+        let op = ObjectiveValueOp {
+            condition_id,
+            value: 1,
+            is_add: true,
+        };
+        self.apply_objective_ops(&quest_id, &[op], mission_assets, role_base_info)
+    }
 }
 
 fn build_quest_progress(quest_definition: &QuestDefinition) -> QuestProgress {
@@ -342,7 +382,6 @@ fn build_quest_progress(quest_definition: &QuestDefinition) -> QuestProgress {
                     None
                 } else {
                     Some((objective_key.clone(), empty_objective(objective_key)))
-                    // Keep valid ones
                 }
             })
             .collect(),
@@ -354,6 +393,6 @@ fn empty_objective(condition_id: &str) -> QuestObjective {
         condition_id: condition_id.to_string(),
         extra_details: HashMap::new(),
         is_complete: false,
-        values: HashMap::from([(OBJECTIVE_PROGRESS_KEY.to_string(), 1)]),
+        values: HashMap::from([(condition_id.to_string(), 0)]),
     }
 }
