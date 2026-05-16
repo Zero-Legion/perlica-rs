@@ -1,0 +1,43 @@
+# Copyright (c) ÆthelingTeam and affiliates.
+#
+# This source code is licensed under the AGPL-3.0 license found in the
+# LICENSE file in the root directory of this source tree.
+
+services:
+  perlica:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: perlica-rs
+    restart: unless-stopped
+
+    # Game server (TCP), admin panel (HTTP), and config server
+    ports:
+      - "1337:1337"
+      - "8080:8080"
+      - "21041:21041"
+
+    volumes:
+      - perlica-saves:/app/saves
+      # Uncomment to provide a custom Config.toml:
+      # - ./Config.toml:/app/Config.toml:ro
+
+    environment:
+      - CONFIG_FILE=/app/Config.toml
+
+    # Check that all three servers are accepting connections
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "nc -z 127.0.0.1 1337 && nc -z 127.0.0.1 8080 && nc -z 127.0.0.1 21041",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+# Named volume so saves persist across container recreations
+volumes:
+  perlica-saves:
+    driver: local

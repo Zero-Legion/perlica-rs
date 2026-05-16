@@ -282,7 +282,7 @@ async fn main() {
         )
         .fallback(fallback);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:21041")
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:21041")
         .await
         .unwrap();
 
