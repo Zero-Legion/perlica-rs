@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # Stage 1: Build the application
-FROM rust:1.85-bookworm AS builder
+FROM rust:nightly-bookworm AS builder
 
 WORKDIR /build
 
@@ -52,6 +52,25 @@ RUN rm -rf lib/common/src lib/config/src lib/proto/src lib/logic/src \
            lib/db/src lib/muip/src lib/codegen/src                    \
            servers/config-server/src servers/game-server/src servers/muip-server/src
 COPY . .
+
+RUN python3 - <<'EOF'
+import json, os, shutil, subprocess
+
+result = subprocess.run(
+    ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+    capture_output=True, text=True, check=True
+)
+names = {p["name"] for p in json.loads(result.stdout)["packages"]}
+variants = names | {n.replace("-", "_") for n in names}
+
+fp_dir = "target/release/.fingerprint"
+if os.path.isdir(fp_dir):
+    for entry in os.listdir(fp_dir):
+        prefix = entry.rsplit("-", 1)[0]
+        if prefix in variants:
+            shutil.rmtree(os.path.join(fp_dir, entry), ignore_errors=True)
+            print(f"  purged fingerprint: {entry}")
+EOF
 
 # Build the real binaries (dependencies are already cached)
 RUN cargo build --release --locked --workspace
