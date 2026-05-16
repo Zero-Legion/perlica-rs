@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 # Stage 1: Build the application
-FROM rust:nightly-bookworm AS builder
+FROM rust:nightly AS builder
 
 WORKDIR /build
 
