@@ -28,7 +28,7 @@ impl WeaponAssets {
             .weapon_exp_item_table
             .values()
             .filter(|e| !e.exp_item_id.is_empty())
-            .map(|e| (e.exp_item_id.clone(), e.weapon_exp as u64))
+            .map(|e| (e.exp_item_id.clone(), e.item_exp as u64))
             .collect();
 
         Ok(Self {
@@ -89,11 +89,26 @@ impl WeaponAssets {
         let Some(template) = self.breakthrough.get(&weapon.breakthrough_template_id) else {
             return 0;
         };
+        template.list.len() as u64
+    }
+
+    /// Returns the current weapon-level cap given how many breakthroughs have been completed.
+    ///
+    /// `breakthrough_count` = `WeaponInstance.breakthrough_lv` (0 = none done).
+    /// The cap equals `breakthroughLv` of the next stage to unlock (`list[breakthrough_count]`).
+    /// Once all stages are done the cap falls back to `weapon.max_lv`.
+    pub fn get_effective_max_lv(&self, weapon_id: &str, breakthrough_count: u64) -> u64 {
+        let Some(weapon) = self.data.get(weapon_id) else {
+            return 1;
+        };
+        let Some(template) = self.breakthrough.get(&weapon.breakthrough_template_id) else {
+            return weapon.max_lv as u64;
+        };
         template
             .list
-            .last()
+            .get(breakthrough_count as usize)
             .map(|e| e.breakthrough_lv as u64)
-            .unwrap_or(0)
+            .unwrap_or(weapon.max_lv as u64)
     }
 
     pub fn contains(&self, weapon_id: &str) -> bool {
@@ -116,14 +131,18 @@ impl WeaponAssets {
         self.breakthrough.get(template_id)
     }
 
-    pub fn get_breakthrough_required_level(&self, weapon_id: &str, target_lv: u32) -> Option<u32> {
+    pub fn get_breakthrough_required_level(
+        &self,
+        weapon_id: &str,
+        target_show_lv: u32,
+    ) -> Option<u32> {
         let weapon = self.data.get(weapon_id)?;
         let template = self.breakthrough.get(&weapon.breakthrough_template_id)?;
         template
             .list
             .iter()
-            .find(|e| e.breakthrough_lv == target_lv)
-            .map(|e| e.breakthrough_show_lv)
+            .find(|e| e.breakthrough_show_lv == target_show_lv)
+            .map(|e| e.breakthrough_lv)
     }
 
     pub fn count_by_type(&self) -> HashMap<u32, usize> {

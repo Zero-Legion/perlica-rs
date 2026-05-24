@@ -70,7 +70,7 @@ impl WeaponInstance {
             exp: 0,
             weapon_lv: 1,
             refine_lv: 0,
-            breakthrough_lv: 1,
+            breakthrough_lv: 0,
             equip_char_id: 0,
             attach_gem_id: 0,
             is_lock: false,
@@ -343,17 +343,19 @@ impl WeaponDepot {
     fn get_breakthrough_required_level(
         &self,
         template_id: &str,
-        target: u64,
+        next_show_lv: u64,
         assets: &BeyondAssets,
     ) -> Option<u64> {
         let w = assets.weapons.get(template_id)?;
         let t = assets
             .weapons
             .get_breakthrough_template(&w.breakthrough_template_id)?;
+        // Match on breakthroughShowLv (1-6) which equals the stage index we want to unlock.
+        // The matched entry's breakthroughLv is the weapon-level gate (e.g. 20, 30, …, 70).
         t.list
             .iter()
-            .find(|e| e.breakthrough_lv as u64 == target)
-            .map(|e| e.breakthrough_show_lv as u64)
+            .find(|e| e.breakthrough_show_lv as u64 == next_show_lv)
+            .map(|e| e.breakthrough_lv as u64)
     }
 
     pub fn add_exp(
@@ -372,6 +374,9 @@ impl WeaponDepot {
             ));
         }
         let tmpl = t.template_id.clone();
+        let cur_lv = t.weapon_lv;
+        let cur_exp_relative = t.exp;
+        let breakthrough_count = t.breakthrough_lv;
         let mut total_exp = 0u64;
         let fodder_count = fodder_inst_ids.len();
         for &fid in fodder_inst_ids {
@@ -399,14 +404,62 @@ impl WeaponDepot {
         for &fid in fodder_inst_ids {
             self.weapons.remove(&fid);
         }
+
+        let max_level = assets
+            .weapons
+            .get_effective_max_lv(&tmpl, breakthrough_count);
+
+        let (new_lv, new_exp_relative) = if total_exp > 0 {
+            let Some(sum_table) = assets.weapons.get_upgrade_sum(
+                assets
+                    .weapons
+                    .get(&tmpl)
+                    .map(|w| w.level_template_id.as_str())
+                    .unwrap_or(""),
+            ) else {
+                let t = self.weapons.get_mut(&target_inst_id).unwrap();
+                return Ok((t.exp, t.weapon_lv));
+            };
+
+            let cum_at_cur = sum_table
+                .list
+                .iter()
+                .find(|e| e.weapon_lv as u64 == cur_lv)
+                .map(|e| e.lv_up_exp_sum as u64)
+                .unwrap_or(0);
+
+            let new_total = cum_at_cur + cur_exp_relative + total_exp;
+            let mut new_level = cur_lv;
+            let mut final_cum = cum_at_cur;
+
+            for entry in &sum_table.list {
+                if entry.weapon_lv as u64 > max_level {
+                    break;
+                }
+                if new_total >= entry.lv_up_exp_sum as u64 {
+                    new_level = entry.weapon_lv as u64;
+                    final_cum = entry.lv_up_exp_sum as u64;
+                } else {
+                    break;
+                }
+            }
+
+            let stored_exp = if new_level >= max_level {
+                0
+            } else {
+                new_total.saturating_sub(final_cum)
+            };
+            (new_level, stored_exp)
+        } else {
+            (cur_lv, cur_exp_relative)
+        };
+
         let t = self.weapons.get_mut(&target_inst_id).unwrap();
-        t.exp += total_exp;
-        let new_lv = assets.weapons.weapon_level_from_exp(&tmpl, t.exp);
-        let old_lv = t.weapon_lv;
         t.weapon_lv = new_lv;
+        t.exp = new_exp_relative;
         info!(
             "Weapon {} +{}exp from {} fodder, lv {}→{}",
-            target_inst_id, total_exp, fodder_count, old_lv, new_lv
+            target_inst_id, total_exp, fodder_count, cur_lv, new_lv
         );
         Ok((t.exp, t.weapon_lv))
     }

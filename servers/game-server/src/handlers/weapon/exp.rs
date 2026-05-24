@@ -7,7 +7,7 @@ use tracing::warn;
 pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp) -> ScWeaponAddExp {
     let target_id = WeaponInstId::new(req.weaponid);
 
-    let (template_id, current_level, current_exp) = {
+    let (template_id, current_level, current_exp, current_breakthrough) = {
         let Some(weapon_data) = ctx.player.char_bag.item_manager.weapons.get(target_id) else {
             warn!("WeaponAddExp failed: unknown weapon_id={}", req.weaponid);
             return ScWeaponAddExp {
@@ -20,6 +20,7 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
             weapon_data.template_id.clone(),
             weapon_data.weapon_lv,
             weapon_data.exp,
+            weapon_data.breakthrough_lv,
         )
     };
 
@@ -31,7 +32,10 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
         };
     };
 
-    let max_level = weapon_template.max_lv as u64;
+    let max_level = ctx
+        .assets
+        .weapons
+        .get_effective_max_lv(&template_id, current_breakthrough);
     if current_level >= max_level {
         return ScWeaponAddExp {
             weaponid: req.weaponid,
