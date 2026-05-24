@@ -1,6 +1,6 @@
 use crate::error::{ConfigError, Result};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tracing::warn;
 
@@ -49,7 +49,7 @@ pub struct MissionDefinition {
 
 #[derive(Debug, Clone, Default)]
 pub struct MissionAssets {
-    missions: BTreeMap<String, MissionDefinition>,
+    missions: HashMap<String, MissionDefinition>,
 }
 
 impl MissionAssets {
@@ -59,7 +59,7 @@ impl MissionAssets {
             return Ok(Self::default());
         }
 
-        let mut missions = BTreeMap::<String, MissionDefinition>::new();
+        let mut missions = HashMap::<String, MissionDefinition>::new();
 
         for key in key_catalog {
             if let Some(mission_id) = key.strip_suffix("_name") {
@@ -155,14 +155,14 @@ impl MissionAssets {
     }
 }
 
-fn collect_mission_keys(tables_dir: &Path) -> Result<BTreeSet<String>> {
+fn collect_mission_keys(tables_dir: &Path) -> Result<HashSet<String>> {
     let text_table_path = tables_dir.join("TextTable.json");
     if !text_table_path.exists() {
         warn!(
             "mission catalog source '{}' was not found; mission sync will be empty",
             text_table_path.display()
         );
-        return Ok(BTreeSet::new());
+        return Ok(HashSet::new());
     }
 
     let contents =
@@ -170,20 +170,14 @@ fn collect_mission_keys(tables_dir: &Path) -> Result<BTreeSet<String>> {
             path: text_table_path.clone(),
             source,
         })?;
-    let text_table: Value =
+    let entries: HashMap<String, Value> =
         serde_json::from_str(&contents).map_err(|source| ConfigError::ParseJson {
             path: text_table_path.clone(),
             source,
         })?;
-    let entries = text_table
-        .as_object()
-        .ok_or_else(|| ConfigError::InvalidStructure {
-            path: text_table_path.clone(),
-            message: "root is not a JSON object".to_string(),
-        })?;
 
-    let mut keys = BTreeSet::new();
-    for (key, value) in entries {
+    let mut keys = HashSet::with_capacity(entries.len() / 4);
+    for (key, value) in &entries {
         if key.starts_with("mission_") {
             keys.insert(key.clone());
         }
@@ -222,19 +216,17 @@ fn collect_mission_keys(tables_dir: &Path) -> Result<BTreeSet<String>> {
             }
         };
 
-        let value: Value = match serde_json::from_str(&contents) {
-            Ok(value) => value,
+        let i18n_entries: HashMap<String, Value> = match serde_json::from_str(&contents) {
+            Ok(map) => map,
             Err(error) => {
                 warn!("failed to parse i18n table '{}': {}", path.display(), error);
                 continue;
             }
         };
 
-        if let Some(entries) = value.as_object() {
-            for key in entries.keys() {
-                if key.starts_with("mission_") {
-                    keys.insert(key.clone());
-                }
+        for key in i18n_entries.keys() {
+            if key.starts_with("mission_") {
+                keys.insert(key.clone());
             }
         }
     }

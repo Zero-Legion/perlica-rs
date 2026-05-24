@@ -1,7 +1,6 @@
 use crate::net::NetContext;
 use perlica_logic::movement::MovementManager;
 use perlica_proto::{CsMoveObjectMove, ScMoveObjectMove};
-use tracing::debug;
 
 /// Updates the team leader's server-side position. Only the leader is tracked; other positions are client-authoritative.
 /// Echoed back with `server_notify: true` for future peer broadcasting.
@@ -15,8 +14,9 @@ pub async fn on_cs_move_object_move(
         team.leader_index.object_id()
     };
 
-    if ctx.player.movement.position_tuple() == MovementManager::default().position_tuple() {
+    if !ctx.player.movement_initialized {
         ctx.player.movement = MovementManager::from(&ctx.player.world);
+        ctx.player.movement_initialized = true;
     }
 
     for info in &req.move_info {
@@ -62,7 +62,7 @@ pub async fn on_cs_move_object_move(
         }
     }
 
-    debug!(
+    tracing::trace!(
         "Movement update received: uid={}, move_count={}",
         ctx.player.uid,
         req.move_info.len()

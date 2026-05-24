@@ -14,7 +14,7 @@ use perlica_proto::{
     ScSelfSceneInfo, SceneCharacter, SceneImplEmpty, SceneInteractive, SceneMonster, SceneNpc,
     SceneObjectCommonInfo, SceneObjectDetailContainer, Vector, sc_self_scene_info::SceneImpl,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,8 @@ struct SceneCache {
     enemy_grid: SpatialGrid,
     interactive_grid: SpatialGrid,
     npc_grid: SpatialGrid,
+    resident_ids: HashSet<u64>,
+    interactive_props: HashMap<u64, HashMap<String, perlica_proto::DynamicParameter>>,
 }
 
 impl SceneCache {
@@ -92,17 +94,34 @@ impl SceneCache {
             CELL_SIZE,
         );
 
+        let interactives = assets.level_data.interactives(scene_id);
+
+        let resident_ids: HashSet<u64> = interactives
+            .iter()
+            .filter(|i| is_always_resident_interactive(&i.base.template_id, i.base.entity_type))
+            .map(|i| i.base.level_logic_id)
+            .collect();
+
+        let interactive_props: HashMap<u64, HashMap<String, perlica_proto::DynamicParameter>> =
+            interactives
+                .iter()
+                .map(|i| (i.base.level_logic_id, lv_props_to_map(&i.properties)))
+                .collect();
+
         tracing::debug!(
-            "Built spatial grids for '{}': {} enemies, {} interactives, {} npcs (cell_size={CELL_SIZE})",
+            "Built spatial grids for '{}': {} enemies, {} interactives ({} resident), {} npcs (cell_size={CELL_SIZE})",
             scene_id,
             enemy_grid.len(),
             interactive_grid.len(),
+            resident_ids.len(),
             npc_grid.len(),
         );
         Self {
             enemy_grid,
             interactive_grid,
             npc_grid,
+            resident_ids,
+            interactive_props,
         }
     }
 }
@@ -1504,14 +1523,17 @@ impl SceneManager {
                 continue;
             };
 
-            // Always-resident interactives (TPs, blockages) are installed
-            // at scene load and bypass the streamer entirely.  Skip them
-            // here so we don't waste a spawn-budget slot or send a
-            // duplicate enter-view notification.
-            if is_always_resident_interactive(
-                &interactive.base.template_id,
-                interactive.base.entity_type,
-            ) {
+            let is_resident = self
+                .scene_cache
+                .as_ref()
+                .map(|c| c.resident_ids.contains(&interactive.base.level_logic_id))
+                .unwrap_or_else(|| {
+                    is_always_resident_interactive(
+                        &interactive.base.template_id,
+                        interactive.base.entity_type,
+                    )
+                });
+            if is_resident {
                 continue;
             }
 
@@ -1582,7 +1604,12 @@ impl SceneManager {
                     belong_level_script_id: interactive.base.belong_level_script_id,
                 }),
                 origin_id: logic_id,
-                properties: lv_props_to_map(&interactive.properties),
+                properties: self
+                    .scene_cache
+                    .as_ref()
+                    .and_then(|c| c.interactive_props.get(&logic_id))
+                    .cloned()
+                    .unwrap_or_else(|| lv_props_to_map(&interactive.properties)),
             });
         }
     }

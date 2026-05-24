@@ -26,6 +26,7 @@ pub struct Player {
     pub world: WorldState,
     pub bitsets: BitsetManager,
     pub movement: MovementManager,
+    pub movement_initialized: bool,
     pub scene: SceneManager,
     pub entities: EntityManager,
     pub missions: MissionManager,
@@ -38,6 +39,7 @@ impl Player {
         self.uid = uid;
         self.loading_state = LoadingState::Pending;
         self.movement = MovementManager::from(&self.world);
+        self.movement_initialized = true;
         // scene_id will be resolved properly during the login sequence
         self.scene.current_scene = self.world.last_scene.clone();
     }
@@ -54,6 +56,7 @@ impl Default for Player {
             world,
             bitsets: BitsetManager::new(),
             movement,
+            movement_initialized: false,
             scene,
             entities: EntityManager::new(),
             missions: MissionManager::default(),
