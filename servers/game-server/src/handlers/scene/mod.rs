@@ -2,6 +2,7 @@
 
 pub mod dialog;
 pub mod entity;
+pub mod interactive;
 pub mod level_script;
 pub mod load;
 pub mod revival;

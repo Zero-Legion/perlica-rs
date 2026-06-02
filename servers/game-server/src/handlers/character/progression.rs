@@ -2,9 +2,9 @@
 //! break / ascension (`on_cs_char_break`).
 
 use crate::net::NetContext;
+use perlica_logic::item::ConsumedItems;
 use perlica_proto::{
-    CsCharBreak, CsCharLevelUp, ScCharBreak, ScCharLevelUp, ScCharSyncLevelExp,
-    ScItemBagSyncModify, ScdItemDepotModify,
+    CsCharBreak, CsCharLevelUp, ScCharBreak, ScCharLevelUp, ScCharSyncLevelExp, ScItemBagSyncModify,
 };
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -96,9 +96,7 @@ pub async fn on_cs_char_level_up(ctx: &mut NetContext<'_>, req: CsCharLevelUp) -
     let cum_at_current = cumulative_exp(level_up_exp, current_level);
 
     let mut total_exp_gained: i64 = 0;
-    let mut consumed: HashMap<String, u32> = HashMap::new();
-
-    use config::item::ItemDepotType;
+    let mut consumed_items = ConsumedItems::new();
 
     for item_info in &req.items {
         if item_info.res_count <= 0 {
@@ -116,27 +114,22 @@ pub async fn on_cs_char_level_up(ctx: &mut NetContext<'_>, req: CsCharLevelUp) -
             continue;
         }
 
-        let consumed_ok = ctx
+        match ctx
             .player
             .char_bag
             .item_manager
-            .consume_stackable(ItemDepotType::SpecialItem, &item_info.res_id, count)
-            .is_ok()
-            || ctx
-                .player
-                .char_bag
-                .item_manager
-                .consume_stackable(ItemDepotType::Factory, &item_info.res_id, count)
-                .is_ok();
-
-        if consumed_ok {
-            total_exp_gained += exp_per_unit * count as i64;
-            *consumed.entry(item_info.res_id.clone()).or_insert(0) += count;
-        } else {
-            warn!(
-                "CharLevelUp: could not consume {} × {}",
-                count, item_info.res_id
-            );
+            .consume_stackable_auto(&item_info.res_id, count)
+        {
+            Ok((depot_type, remaining)) => {
+                total_exp_gained += exp_per_unit * count as i64;
+                consumed_items.record(depot_type, item_info.res_id.clone(), remaining);
+            }
+            Err(e) => {
+                warn!(
+                    "CharLevelUp: could not consume {} * {}: {:?}",
+                    count, item_info.res_id, e
+                );
+            }
         }
     }
 
@@ -170,7 +163,7 @@ pub async fn on_cs_char_level_up(ctx: &mut NetContext<'_>, req: CsCharLevelUp) -
     }
 
     info!(
-        "CharLevelUp complete: uid={}, char_id={}, level {}→{}, exp_gained={}, remaining={}",
+        "CharLevelUp complete: uid={}, char_id={}, level {}->{}, exp_gained={}, remaining={}",
         ctx.player.uid, req.char_obj_id, current_level, new_level, total_exp_gained, synced_exp
     );
 
@@ -198,53 +191,23 @@ pub async fn on_cs_char_level_up(ctx: &mut NetContext<'_>, req: CsCharLevelUp) -
         error!("Failed to sync level/exp: {:?}", e);
     }
 
-    if !consumed.is_empty() {
-        let items: HashMap<String, i64> = consumed
-            .keys()
-            .map(|id| {
-                let in_special = ctx
-                    .player
-                    .char_bag
-                    .item_manager
-                    .count_of(ItemDepotType::SpecialItem, id);
-                let new_count = if ctx.player.char_bag.item_manager.has_stackable(
-                    ItemDepotType::SpecialItem,
-                    id,
-                    0,
-                ) {
-                    in_special
-                } else {
-                    ctx.player
-                        .char_bag
-                        .item_manager
-                        .count_of(ItemDepotType::Factory, id)
-                };
-                (id.clone(), new_count as i64)
-            })
-            .collect();
+    if !consumed_items.is_empty() {
+        let depot_modify = consumed_items.build_depot_map();
 
-        let mut depot_modify = HashMap::new();
-        depot_modify.insert(
-            4i32,
-            ScdItemDepotModify {
-                items,
-                inst_list: vec![],
-                del_inst_list: vec![],
-            },
-        );
-
-        if let Err(e) = ctx
-            .notify(ScItemBagSyncModify {
-                depot: depot_modify,
-                bag: None,
-                factory_depot: None,
-                cannot_destroy: HashMap::new(),
-                use_blackboard: None,
-                is_new: false,
-            })
-            .await
-        {
-            error!("Failed to send item bag modify: {:?}", e);
+        if !depot_modify.is_empty() {
+            if let Err(e) = ctx
+                .notify(ScItemBagSyncModify {
+                    depot: depot_modify,
+                    bag: None,
+                    factory_depot: None,
+                    cannot_destroy: HashMap::new(),
+                    use_blackboard: None,
+                    is_new: false,
+                })
+                .await
+            {
+                error!("Failed to send item bag modify: {:?}", e);
+            }
         }
     }
 
@@ -280,7 +243,7 @@ pub async fn on_cs_char_break(ctx: &mut NetContext<'_>, req: CsCharBreak) -> ScC
             char_data.hp = attrs.hp;
         }
         info!(
-            "CharBreak complete: uid={}, char_id={}, stage {} → {}",
+            "CharBreak complete: uid={}, char_id={}, stage {} -> {}",
             ctx.player.uid, req.char_obj_id, from_stage, new_stage
         );
     } else {

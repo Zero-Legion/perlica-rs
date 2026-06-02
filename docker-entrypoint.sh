@@ -5,8 +5,8 @@
 # LICENSE file in the root directory of this source tree.
 
 # Starts config-server, game-server, and muip-server under tini.
-# game-server [muip]  → host/port = GM bridge TCP listener
-# muip-server [muip]  → host/port = HTTP admin panel; gm_host/gm_port = GM bridge client
+# game-server [muip]  -> host/port = GM bridge TCP listener
+# muip-server [muip]  -> host/port = HTTP admin panel; gm_host/gm_port = GM bridge client
 # Separate configs are generated to avoid port conflicts between the two.
 
 set -euo pipefail

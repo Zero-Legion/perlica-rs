@@ -134,7 +134,7 @@
 
 ### Changed
 
-#### Errors: `anyhow` → typed `thiserror`
+#### Errors: `anyhow` -> typed `thiserror`
 - New error enums in `lib/config/src/error.rs`, `lib/db/src/error.rs`, `lib/logic/src/error.rs`.
 - Call sites across `config/{character,id_to_str,level_data,skill,str_to_id,weapon}`, `db/saves`, `logic/{character/char_bag,item}`, and the game-server handlers updated.
 - Added `InvalidStructure` (config) and `Insufficient` (logic) variants so callers can branch on missing items or bad JSON without string matching.

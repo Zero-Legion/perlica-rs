@@ -103,7 +103,7 @@ pub const ZONE_LEAVE_RADII_SQ: [f32; 4] =
 /// Default is `Distant` (150 wu) instead of the previous `Background`
 /// (250 wu), the latter pre-streamed enemies a player would not reach for
 /// several seconds, paying for AI/animation work that the client never
-/// actually used.  Cuts the queried area from 250² → 150² = ~2.8× fewer
+/// actually used.  Cuts the queried area from 250² -> 150² = ~2.8× fewer
 /// candidates even at the worst-case (all-zones-due) tick.
 pub const ENEMY_MAX_ZONE: ReplicationZone = ReplicationZone::Distant;
 
@@ -589,7 +589,7 @@ impl InterestManager {
     /// `MAX_INTEREST_RADIUS` (275 wu) regardless of which zones were due.
     /// This pass narrows it twice over:
     ///
-    ///   1. Per-tick: outermost-due zone (Zone 0 most ticks → 40 wu).
+    ///   1. Per-tick: outermost-due zone (Zone 0 most ticks -> 40 wu).
     ///   2. Per-kind: clamp by `kind_max_zone` (interactives / NPCs cap at
     ///      Combat = 80 wu, never reach Distant or Background).
     ///
@@ -1100,9 +1100,9 @@ mod tests {
         assert!((mgr.max_due_radius() - 40.0).abs() < 1e-3);
 
         // Advance another 40 ms (now 60 ms after Zone 1's last check):
-        //   * Zone 0 last check was at 1020 → 1060-1020 = 40 ms >= 16 ✓
-        //   * Zone 1 last check was at 1000 → 1060-1000 = 60 ms >= 50 ✓
-        //   * Zone 2 last check was at 1000 → 1060-1000 = 60 ms <  160 ✗
+        //   * Zone 0 last check was at 1020 -> 1060-1020 = 40 ms >= 16 ✓
+        //   * Zone 1 last check was at 1000 -> 1060-1000 = 60 ms >= 50 ✓
+        //   * Zone 2 last check was at 1000 -> 1060-1000 = 60 ms <  160 ✗
         let due = mgr.zones_due(1060);
         assert_eq!(due, [true, true, false, false]);
         // Outermost due zone is now Zone 1 (Combat) at 80 wu.
@@ -1144,10 +1144,10 @@ mod tests {
     #[test]
     fn touch_or_classify_bumps_last_close_when_in_combat_range() {
         let mut mgr = InterestManager::new();
-        // Ghosted in at Distant → last_close_ms starts at 0.
+        // Ghosted in at Distant -> last_close_ms starts at 0.
         mgr.ghost_in(7, ReplicationZone::Distant, StreamBucket::Enemy, 1000);
         assert_eq!(mgr.entries.get(&7).unwrap().last_close_ms, 0);
-        // Reclassify to Combat at t=2000 → last_close_ms must be bumped.
+        // Reclassify to Combat at t=2000 -> last_close_ms must be bumped.
         assert!(mgr.touch_or_classify(7, ReplicationZone::Combat, 2000));
         assert_eq!(mgr.entries.get(&7).unwrap().last_close_ms, 2000);
     }
@@ -1156,10 +1156,10 @@ mod tests {
     fn update_zone_bumps_last_close_when_in_combat_range() {
         let mut mgr = InterestManager::new();
         mgr.ghost_in(7, ReplicationZone::Distant, StreamBucket::Enemy, 1000);
-        // Reclassify to Immediate at t=3000 → last_close_ms updates.
+        // Reclassify to Immediate at t=3000 -> last_close_ms updates.
         mgr.update_zone(7, ReplicationZone::Immediate, 3000);
         assert_eq!(mgr.entries.get(&7).unwrap().last_close_ms, 3000);
-        // Reclassify to Distant at t=4000 → last_close_ms must NOT change.
+        // Reclassify to Distant at t=4000 -> last_close_ms must NOT change.
         mgr.update_zone(7, ReplicationZone::Distant, 4000);
         assert_eq!(mgr.entries.get(&7).unwrap().last_close_ms, 3000);
     }
@@ -1205,19 +1205,19 @@ mod tests {
     #[test]
     fn at_capacity_reflects_live_count() {
         let mut mgr = InterestManager::new();
-        // NPC concurrent cap is 16.  Fill below → not at capacity.
+        // NPC concurrent cap is 16.  Fill below -> not at capacity.
         for i in 0..(NPC_CONCURRENT_CAP - 1) as u64 {
             mgr.ghost_in(i, ReplicationZone::Immediate, StreamBucket::Npc, 0);
         }
         assert!(!mgr.at_capacity(StreamBucket::Npc));
-        // Reach exactly the cap → at capacity.
+        // Reach exactly the cap -> at capacity.
         mgr.ghost_in(999, ReplicationZone::Immediate, StreamBucket::Npc, 0);
         assert!(mgr.at_capacity(StreamBucket::Npc));
     }
 
     #[test]
     fn from_dist_sq_capped_clamps_to_max_zone() {
-        // Distance well into Distant range (140 wu) but capped at Combat → None.
+        // Distance well into Distant range (140 wu) but capped at Combat -> None.
         assert_eq!(
             ReplicationZone::from_dist_sq_capped(140.0 * 140.0, ReplicationZone::Combat),
             None,
@@ -1227,7 +1227,7 @@ mod tests {
             ReplicationZone::from_dist_sq_capped(140.0 * 140.0, ReplicationZone::Background),
             Some(ReplicationZone::Distant),
         );
-        // Inside Combat range, capped at Combat → still classifies.
+        // Inside Combat range, capped at Combat -> still classifies.
         assert_eq!(
             ReplicationZone::from_dist_sq_capped(70.0 * 70.0, ReplicationZone::Combat),
             Some(ReplicationZone::Combat),
@@ -1239,18 +1239,18 @@ mod tests {
         let mut mgr = InterestManager::new();
         // First call , every zone due, mask = 0b1111.
         let _ = mgr.zones_due(1000);
-        // Unclamped → Background (250 wu).
+        // Unclamped -> Background (250 wu).
         assert!((mgr.max_due_radius() - 250.0).abs() < 1e-3);
-        // Clamped at Combat → 80 wu.
+        // Clamped at Combat -> 80 wu.
         assert!((mgr.max_due_radius_for(ReplicationZone::Combat) - 80.0).abs() < 1e-3);
-        // Clamped at Immediate → 40 wu.
+        // Clamped at Immediate -> 40 wu.
         assert!((mgr.max_due_radius_for(ReplicationZone::Immediate) - 40.0).abs() < 1e-3);
     }
 
     #[test]
     fn should_retain_returns_false_for_distant_enemy_no_recent_engagement() {
         let mut mgr = InterestManager::new();
-        // Ghosted in at Distant → last_close_ms = 0 (never engaged).
+        // Ghosted in at Distant -> last_close_ms = 0 (never engaged).
         mgr.ghost_in(1, ReplicationZone::Distant, StreamBucket::Enemy, 1000);
         let entry = mgr.entries.get(&1).unwrap().clone();
         // 130 wu away , within sticky cap, but never engaged.  Must NOT
@@ -1261,11 +1261,11 @@ mod tests {
     #[test]
     fn should_retain_keeps_recently_engaged_enemy_open_world() {
         let mut mgr = InterestManager::new();
-        // Ghosted in at Combat range at t=1000 → last_close_ms = 1000.
+        // Ghosted in at Combat range at t=1000 -> last_close_ms = 1000.
         mgr.ghost_in(1, ReplicationZone::Combat, StreamBucket::Enemy, 1000);
         let entry = mgr.entries.get(&1).unwrap().clone();
         // 1500 ms later, player kited to 150 wu (past the 140 wu Combat
-        // leave).  Recently engaged → retained (no in_battle needed).
+        // leave).  Recently engaged -> retained (no in_battle needed).
         assert!(mgr.should_retain(&entry, 150.0 * 150.0, 2500, false));
     }
 
@@ -1314,7 +1314,7 @@ mod tests {
         let mut mgr = InterestManager::new();
         mgr.ghost_in_resident(1, ReplicationZone::Combat, StreamBucket::Interactive, 0);
         let entry = mgr.entries.get(&1).unwrap().clone();
-        // Always-resident → retained no matter how far, no matter the time.
+        // Always-resident -> retained no matter how far, no matter the time.
         assert!(mgr.should_retain(&entry, 9_999.0 * 9_999.0, 0, false));
         assert!(mgr.should_retain(&entry, 9_999.0 * 9_999.0, 999_999_999, true));
     }

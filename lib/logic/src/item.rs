@@ -14,6 +14,59 @@ use std::collections::HashMap;
 use std::convert::Into;
 use tracing::{debug, info, warn};
 
+#[derive(Debug, Clone, Default)]
+pub struct ConsumedItems {
+    by_depot: HashMap<ItemDepotType, HashMap<String, u32>>,
+}
+
+impl ConsumedItems {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that `template_id` was consumed from `depot_type` and now has
+    /// `remaining` items left. If `remaining` is 0 the item was fully consumed
+    /// and the caller should send the client a message of removal.
+    pub fn record(&mut self, depot_type: ItemDepotType, template_id: String, remaining: u32) {
+        self.by_depot
+            .entry(depot_type)
+            .or_default()
+            .insert(template_id, remaining);
+    }
+
+    /// Build a `ScdItemDepotModify` for the given depot type containing
+    /// only the items that were consumed.
+    pub fn depot_modify(&self, depot_type: ItemDepotType) -> Option<ScdItemDepotModify> {
+        let items = self.by_depot.get(&depot_type)?;
+        if items.is_empty() {
+            return None;
+        }
+        Some(ScdItemDepotModify {
+            items: items.iter().map(|(k, &v)| (k.clone(), v as i64)).collect(),
+            inst_list: vec![],
+            del_inst_list: vec![],
+        })
+    }
+
+    pub fn build_depot_map(&self) -> HashMap<i32, ScdItemDepotModify> {
+        let mut map = HashMap::new();
+        for &dt in &[
+            ItemDepotType::SpecialItem,
+            ItemDepotType::MissionItem,
+            ItemDepotType::Factory,
+        ] {
+            if let Some(modify) = self.depot_modify(dt) {
+                map.insert(dt as i32, modify);
+            }
+        }
+        map
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_depot.is_empty() || self.by_depot.values().all(|m| m.is_empty())
+    }
+}
+
 macro_rules! inst_id_newtype {
     ($Name:ident) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -458,13 +511,17 @@ impl WeaponDepot {
         t.weapon_lv = new_lv;
         t.exp = new_exp_relative;
         info!(
-            "Weapon {} +{}exp from {} fodder, lv {}→{}",
+            "Weapon {} +{}exp from {} fodder, lv {}->{}",
             target_inst_id, total_exp, fodder_count, cur_lv, new_lv
         );
         Ok((t.exp, t.weapon_lv))
     }
 
-    pub fn breakthrough(&mut self, inst_id: WeaponInstId, assets: &BeyondAssets) -> Result<u64> {
+    pub fn breakthrough(
+        &mut self,
+        inst_id: WeaponInstId,
+        assets: &BeyondAssets,
+    ) -> Result<(u64, u32, Vec<(String, u32)>)> {
         let w = self
             .weapons
             .get(&inst_id)
@@ -483,8 +540,9 @@ impl WeaponDepot {
                 "Already at max breakthrough".into(),
             ));
         }
+        let next_show_lv = cur + 1;
         let req = self
-            .get_breakthrough_required_level(&tmpl, cur + 1, assets)
+            .get_breakthrough_required_level(&tmpl, next_show_lv, assets)
             .unwrap_or(1);
         if lv < req {
             return Err(LogicError::InvalidOperation(format!(
@@ -492,13 +550,38 @@ impl WeaponDepot {
                 lv, req
             )));
         }
+        // Look up the material cost for this breakthrough stage.
+        let (gold_cost, material_costs) = assets
+            .weapons
+            .get(&tmpl)
+            .and_then(|w| {
+                assets
+                    .weapons
+                    .get_breakthrough_template(&w.breakthrough_template_id)
+            })
+            .and_then(|t| {
+                t.list
+                    .iter()
+                    .find(|e| e.breakthrough_show_lv as u64 == next_show_lv)
+            })
+            .map(|entry| {
+                let gold = entry.breakthrough_gold;
+                let mats: Vec<(String, u32)> = entry
+                    .break_item_list
+                    .iter()
+                    .map(|bi| (bi.id.clone(), bi.count))
+                    .collect();
+                (gold, mats)
+            })
+            .unwrap_or((0, Vec::new()));
+
         let w = self.weapons.get_mut(&inst_id).unwrap();
         w.breakthrough_lv += 1;
         info!(
-            "Weapon {} breakthrough: {}→{}",
-            inst_id, cur, w.breakthrough_lv
+            "Weapon {} breakthrough: {}->{} (gold={}, mats={:?})",
+            inst_id, cur, w.breakthrough_lv, gold_cost, material_costs
         );
-        Ok(w.breakthrough_lv)
+        Ok((w.breakthrough_lv, gold_cost, material_costs))
     }
 
     fn get_max_refine(cfg: Option<&config::tables::weapon::Weapon>) -> u64 {
@@ -557,7 +640,7 @@ impl WeaponDepot {
         let t = self.weapons.get_mut(&target).unwrap();
         t.refine_lv += 1;
         info!(
-            "Weapon {} refined: {}→{}",
+            "Weapon {} refined: {}->{}",
             target,
             t.refine_lv - 1,
             t.refine_lv
@@ -1243,7 +1326,7 @@ impl StackableDepot {
         let e = self.counts.entry(template_id.to_owned()).or_insert(0);
         *e = e.saturating_add(count);
         debug!(
-            "StackableDepot({}): +{} {} → {}",
+            "StackableDepot({}): +{} {} -> {}",
             self.depot_type, count, template_id, e
         );
         *e
@@ -1277,6 +1360,11 @@ impl StackableDepot {
         self.count_of(id) >= count
     }
 
+    /// Returns an iterator over all (template_id, count) pairs in this depot.
+    pub fn all_counts(&self) -> impl Iterator<Item = (&String, &u32)> {
+        self.counts.iter()
+    }
+
     pub fn set(&mut self, id: &str, count: u32) {
         if count == 0 {
             self.counts.remove(id);
@@ -1308,7 +1396,7 @@ impl StackableDepot {
     }
 
     /// Build a `ScdItemDepotModify` reflecting a batch of consumed items.
-    /// `consumed` is a map of template_id → count that was removed.
+    /// `consumed` is a map of template_id -> count that was removed.
     pub fn consumed_modify(consumed: &HashMap<String, u32>) -> ScdItemDepotModify {
         ScdItemDepotModify {
             items: consumed
@@ -1335,7 +1423,7 @@ impl From<&StackableDepot> for ScdItemDepot {
 }
 
 #[derive(Clone, Copy)]
-pub struct AttrList<'a>(&'a AttrModifier);
+pub struct AttrList<'a>(pub &'a AttrModifier);
 impl<'a> From<AttrList<'a>> for EquipAttr {
     fn from(val: AttrList) -> Self {
         let attrs = val.0;
@@ -1350,7 +1438,7 @@ impl<'a> From<AttrList<'a>> for EquipAttr {
 const STARTER_SPECIAL_COUNT: u32 = 999;
 const STARTER_MISSION_COUNT: u32 = 999;
 const STARTER_FACTORY_COUNT: u32 = 9_999;
-const BAG_GRID_LIMIT: i32 = 1_500;
+const BAG_GRID_LIMIT: i32 = 30;
 
 /// Starter wallet amounts sent via `ScSyncWallet` on every login.
 /// These are not persisted, the emulator gives them unconditionally.
@@ -1513,17 +1601,11 @@ impl ItemManager {
         depot.insert(4, (&self.special_items).into());
         depot.insert(5, (&self.mission_items).into());
         let factory_depot = Some((&self.factory_items).into());
-        let bag = {
-            let mut idx: i32 = 0;
-            let mut grids: Vec<ScdItemGrid> = Vec::new();
-            grids.extend(self.special_items.to_bag_grids(&mut idx));
-            grids.extend(self.mission_items.to_bag_grids(&mut idx));
-            grids.extend(self.factory_items.to_bag_grids(&mut idx));
-            Some(ScdItemBag {
-                grid_limit: BAG_GRID_LIMIT,
-                grids,
-            })
-        };
+        let bag = Some(ScdItemBag {
+            grid_limit: BAG_GRID_LIMIT,
+            grids: vec![],
+        });
+
         let cannot_destroy: HashMap<String, bool> = assets
             .items
             .iter()
@@ -1570,6 +1652,93 @@ impl ItemManager {
             ItemDepotType::Factory => Some(&mut self.factory_items),
             _ => None,
         }
+    }
+
+    /// Try to consume `count` units of `template_id` from the appropriate
+    /// stackable depot. Checks SpecialItem first, then Factory - but only
+    /// falls through to the second depot if the item doesn't exist in the
+    /// first at all (not if it exists but is insufficient).
+    ///
+    /// Returns `Ok((depot_type, remaining_count))` on success.
+    pub fn consume_stackable_auto(
+        &mut self,
+        template_id: &str,
+        count: u32,
+    ) -> Result<(ItemDepotType, u32)> {
+        if self.special_items.has(template_id, count) {
+            let rem = self.special_items.consume(template_id, count)?;
+            return Ok((ItemDepotType::SpecialItem, rem));
+        }
+        if self.special_items.count_of(template_id) > 0 {
+            return Err(LogicError::Insufficient {
+                item_id: template_id.to_string(),
+                have: self.special_items.count_of(template_id),
+                need: count,
+            });
+        }
+        if self.factory_items.has(template_id, count) {
+            let rem = self.factory_items.consume(template_id, count)?;
+            return Ok((ItemDepotType::Factory, rem));
+        }
+        Err(LogicError::Insufficient {
+            item_id: template_id.to_string(),
+            have: self.factory_items.count_of(template_id),
+            need: count,
+        })
+    }
+
+    pub fn find_stackable_depot(&self, template_id: &str, count: u32) -> Option<ItemDepotType> {
+        if self.special_items.has(template_id, count) {
+            return Some(ItemDepotType::SpecialItem);
+        }
+        if self.factory_items.has(template_id, count) {
+            return Some(ItemDepotType::Factory);
+        }
+        None
+    }
+
+    /// Validate that all required materials are available before proceeding
+    /// with an operation. Returns an error on the first missing material.
+    pub fn validate_materials(&self, materials: &[(String, u32)]) -> Result<()> {
+        for (mat_id, mat_count) in materials {
+            if *mat_count == 0 {
+                continue;
+            }
+            if self.find_stackable_depot(mat_id, *mat_count).is_none() {
+                let have_special = self.special_items.count_of(mat_id);
+                let have_factory = self.factory_items.count_of(mat_id);
+                return Err(LogicError::Insufficient {
+                    item_id: mat_id.clone(),
+                    have: have_special + have_factory,
+                    need: *mat_count,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Consume multiple materials, recording each consumption into `consumed`.
+    /// Callers of this method need to call call `validate_materials` first to ensure all materials are available.
+    pub fn consume_materials(
+        &mut self,
+        materials: &[(String, u32)],
+        consumed: &mut ConsumedItems,
+    ) -> Result<()> {
+        for (mat_id, mat_count) in materials {
+            if *mat_count == 0 {
+                continue;
+            }
+            match self.consume_stackable_auto(mat_id, *mat_count) {
+                Ok((depot_type, remaining)) => {
+                    consumed.record(depot_type, mat_id.clone(), remaining);
+                }
+                Err(e) => {
+                    warn!("Material consumption failed for {}: {:?}", mat_id, e);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
     }
 }
 

@@ -1,5 +1,9 @@
 pub mod character;
 pub mod equip;
+pub mod factory_const;
+pub mod factory_map;
+pub mod factory_recycler_const;
+pub mod factory_skill_const;
 pub mod item;
 pub mod level_data;
 pub mod skill_patch;

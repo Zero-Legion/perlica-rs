@@ -29,7 +29,7 @@ Thank you for considering contributing to Perlica RS.
    - configuration field
    - asset loading logic
    - persistence format  
-   → update this `README.md` (especially Configuration and Features sections) and any relevant wiki pages.
+   -> update this `README.md` (especially Configuration and Features sections) and any relevant wiki pages.
 
 3. Write a clear pull request title and description:
    - What problem does this solve?

@@ -9,7 +9,7 @@
 ## Features
 
 ### Core Systems
-- Full phased login sequence (BaseData → Wallet → ItemBag → CharBag → Unlocks → Guides → Missions → CharAttrs → CharStatus → Factory → Bitsets → EnterScene)
+- Full phased login sequence (BaseData -> Wallet -> ItemBag -> CharBag -> Unlocks -> Guides -> Missions -> CharAttrs -> CharStatus -> Factory -> Bitsets -> EnterScene)
 - Character bag with multiple teams, team switching, skill levels, attributes, and normal/ultimate skills
 - Character progression: level up via exp items, ascension / break stage, and skill level advancement.
 - Complete weapon system: exp feeding from fodder weapons and stackable items , breakthrough levels, gem socket/unsocket, equip/unequip.
@@ -24,7 +24,7 @@
 - Revival system with campfire checkpoint persistence, revival modes (default, repatriate, checkpoint), and `CsSceneRevival` that revives dead characters at 50 % HP
 
 ### Mission & Guide (half broken state)
-- `MissionManager` with quest objective tracking, multi-quest progression within a mission, and mission state transitions (processing → completed)
+- `MissionManager` with quest objective tracking, multi-quest progression within a mission, and mission state transitions (processing -> completed)
 - Bootstrap: on first login the prologue mission (`mission_mai_e0m1`) is selected, or the first available mission if the prologue is absent from assets
 - Mission tracking.
 - All mission and guide state is persisted across sessions
@@ -43,7 +43,7 @@
 - All unlock systems pushed as fully unlocked on every login
 
 ### Persistence
-- Bincode-based player saves (atomic write via tmp → rename) storing: `CharBag`, `WorldState`, `BitsetManager`, checkpoint, revival mode, `MissionManager`, `GuideManager`
+- Bincode-based player saves (atomic write via tmp -> rename) storing: `CharBag`, `WorldState`, `BitsetManager`, checkpoint, revival mode, `MissionManager`, `GuideManager`
 - Automatic data validation after load, repairs mismatched weapon references and orphaned equip entries
 
 ### Administration

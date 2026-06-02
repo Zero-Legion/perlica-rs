@@ -1,8 +1,8 @@
 use crate::net::NetContext;
-use perlica_logic::item::WeaponInstId;
+use perlica_logic::item::{ConsumedItems, WeaponInstId};
 use perlica_proto::{CsWeaponAddExp, ScItemBagSyncModify, ScWeaponAddExp, ScdItemDepotModify};
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp) -> ScWeaponAddExp {
     let target_id = WeaponInstId::new(req.weaponid);
@@ -58,9 +58,7 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
     let upgrade_sum_list = &upgrade_sum_template.unwrap().list;
 
     let mut total_exp_gained: i64 = 0;
-    let mut consumed_stackable: HashMap<String, u32> = HashMap::new();
-
-    use config::item::ItemDepotType;
+    let mut consumed_items = ConsumedItems::new();
 
     for (item_id, &count) in &req.cost_item_id2_count {
         if count == 0 {
@@ -72,22 +70,22 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
             continue;
         }
 
-        let consumed_ok = ctx
+        match ctx
             .player
             .char_bag
             .item_manager
-            .consume_stackable(ItemDepotType::SpecialItem, item_id, count)
-            .is_ok()
-            || ctx
-                .player
-                .char_bag
-                .item_manager
-                .consume_stackable(ItemDepotType::Factory, item_id, count)
-                .is_ok();
-
-        if consumed_ok {
-            total_exp_gained += exp_per_unit as i64 * count as i64;
-            *consumed_stackable.entry(item_id.clone()).or_insert(0) += count;
+            .consume_stackable_auto(item_id, count)
+        {
+            Ok((depot_type, remaining)) => {
+                total_exp_gained += exp_per_unit as i64 * count as i64;
+                consumed_items.record(depot_type, item_id.clone(), remaining);
+            }
+            Err(e) => {
+                debug!(
+                    "WeaponAddExp: could not consume {} * {}: {:?}",
+                    count, item_id, e
+                );
+            }
         }
     }
 
@@ -175,8 +173,7 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
         .get(target_id)
         .map(|w| w.into());
     let del_inst_list: Vec<u64> = valid_fodders.iter().map(|id| id.as_u64()).collect();
-
-    if updated_target.is_some() || !del_inst_list.is_empty() || !consumed_stackable.is_empty() {
+    if updated_target.is_some() || !del_inst_list.is_empty() || !consumed_items.is_empty() {
         let mut depot = HashMap::new();
         depot.insert(
             1i32,
@@ -187,37 +184,8 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
             },
         );
 
-        if !consumed_stackable.is_empty() {
-            let items: HashMap<String, i64> = consumed_stackable
-                .keys()
-                .map(|id| {
-                    let count = if ctx.player.char_bag.item_manager.has_stackable(
-                        ItemDepotType::SpecialItem,
-                        id,
-                        0,
-                    ) {
-                        ctx.player
-                            .char_bag
-                            .item_manager
-                            .count_of(ItemDepotType::SpecialItem, id)
-                    } else {
-                        ctx.player
-                            .char_bag
-                            .item_manager
-                            .count_of(ItemDepotType::Factory, id)
-                    };
-                    (id.clone(), count as i64)
-                })
-                .collect();
-
-            depot.insert(
-                4i32,
-                ScdItemDepotModify {
-                    items,
-                    inst_list: vec![],
-                    del_inst_list: vec![],
-                },
-            );
+        for (depot_type, modify) in consumed_items.build_depot_map() {
+            depot.insert(depot_type, modify);
         }
 
         let _ = ctx
@@ -231,6 +199,11 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
             })
             .await;
     }
+
+    info!(
+        "WeaponAddExp: uid={}, weapon={}, +{}exp, lv {}->{}",
+        ctx.player.uid, req.weaponid, total_exp_gained, current_level, final_lv
+    );
 
     ScWeaponAddExp {
         weaponid: req.weaponid,

@@ -1,5 +1,7 @@
 use crate::error::{LogicError, Result};
-use crate::item::{ItemManager, WeaponAttachGemArgs, WeaponDetachGemArgs, WeaponPutonArgs};
+use crate::item::{
+    ConsumedItems, ItemManager, WeaponAttachGemArgs, WeaponDetachGemArgs, WeaponPutonArgs,
+};
 use crate::traits::KeyedContainerExt;
 use common::time::now_ms;
 use config::BeyondAssets;
@@ -637,23 +639,52 @@ pub fn handle_weapon_add_exp(
     Ok(weapon.into())
 }
 
+pub struct BreakthroughResult {
+    pub response: ScWeaponBreakthrough,
+    pub gold_cost: u32,
+    pub consumed: ConsumedItems,
+}
+
 pub fn handle_weapon_breakthrough(
     char_bag: &mut CharBag,
     weapon_id: u64,
     assets: &BeyondAssets,
-) -> Result<ScWeaponBreakthrough> {
+) -> Result<BreakthroughResult> {
     let inst_id = WeaponInstId::new(weapon_id);
 
-    char_bag
+    let (_new_lv, gold_cost, material_costs) = char_bag
         .item_manager
         .weapons
         .breakthrough(inst_id, assets)?;
+
+    if let Err(e) = char_bag.item_manager.validate_materials(&material_costs) {
+        // Roll back the breakthrough level since materials are insufficient
+        if let Some(w) = char_bag.item_manager.weapons.get_mut(inst_id) {
+            w.breakthrough_lv = w.breakthrough_lv.saturating_sub(1);
+        }
+        return Err(e);
+    }
+
+    let mut consumed = ConsumedItems::new();
+    char_bag
+        .item_manager
+        .consume_materials(&material_costs, &mut consumed)?;
 
     let weapon = char_bag
         .item_manager
         .weapons
         .get_or_not_found(inst_id, "Weapon not found after breakthrough")?;
-    Ok(weapon.into())
+
+    info!(
+        "Weapon breakthrough complete: weapon={}, new_lv={}, gold_cost={}, mats={:?}",
+        inst_id, weapon.breakthrough_lv, gold_cost, material_costs
+    );
+
+    Ok(BreakthroughResult {
+        response: weapon.into(),
+        gold_cost,
+        consumed,
+    })
 }
 
 pub fn handle_weapon_attach_gem(

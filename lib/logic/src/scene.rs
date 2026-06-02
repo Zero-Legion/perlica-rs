@@ -1340,9 +1340,9 @@ impl SceneManager {
     //      zone is beyond the bucket's `max_zone`, the radius shrinks
     //      accordingly (or returns 0, in which case we skip the bucket).
     //   2. Walk the bucket's spatial grid for candidates.
-    //   3. For each candidate: 3-D distance check → zone classification
-    //      (capped) → single-probe touch-or-classify → occlusion check (Zone 0
-    //      enemies only) → ghost-in.
+    //   3. For each candidate: 3-D distance check -> zone classification
+    //      (capped) -> single-probe touch-or-classify -> occlusion check (Zone 0
+    //      enemies only) -> ghost-in.
     //   4. Stop ghosting in once the per-tick spawn budget is exhausted OR
     //      the concurrent cap is reached.  Remaining candidates are silently
     //      deferred to subsequent ticks.
@@ -1750,6 +1750,28 @@ impl SceneManager {
 
     pub fn scene_name(&self) -> &str {
         &self.current_scene
+    }
+
+    /// Updates (or inserts) a single property on an interactive object in the
+    /// scene cache.  Returns `Some(old_value)` if the property existed before,
+    /// or `None` if it was newly inserted.  Returns `None` (no-op) if the
+    /// scene cache has not been built yet or the interactive `id` is unknown.
+    pub fn update_interactive_property(
+        &mut self,
+        id: u64,
+        key: &str,
+        value: DynamicParameter,
+    ) -> Option<DynamicParameter> {
+        let cache = self.scene_cache.as_mut()?;
+        let props = cache.interactive_props.get_mut(&id)?;
+        props.insert(key.to_string(), value)
+    }
+
+    /// Returns a clone of the current properties for an interactive object,
+    /// if the scene cache is active and the `id` is known.
+    pub fn get_interactive_properties(&self, id: u64) -> Option<HashMap<String, DynamicParameter>> {
+        let cache = self.scene_cache.as_ref()?;
+        Some(cache.interactive_props.get(&id)?.clone())
     }
 
     pub fn is_in_scene(&self) -> bool {

@@ -77,6 +77,7 @@ enum LoginPhase {
     Factory,
     Bitsets,
     Mail,
+    RoleSceneInfo,
     EnterScene,
     Done,
 }
@@ -95,7 +96,8 @@ impl LoginPhase {
             Self::CharStatus => Self::Factory,
             Self::Factory => Self::Bitsets,
             Self::Bitsets => Self::Mail,
-            Self::Mail => Self::EnterScene,
+            Self::Mail => Self::RoleSceneInfo,
+            Self::RoleSceneInfo => Self::EnterScene,
             Self::EnterScene => Self::Done,
             Self::Done => Self::Done,
         }
@@ -133,6 +135,7 @@ pub(crate) async fn run_login_sequence(ctx: &mut NetContext<'_>) {
                 }
                 sync_ok
             }
+            LoginPhase::RoleSceneInfo => unlock::all_role_sync(ctx).await,
             LoginPhase::EnterScene => scene::notify_enter_scene(ctx).await,
             LoginPhase::Done => unreachable!(),
         };

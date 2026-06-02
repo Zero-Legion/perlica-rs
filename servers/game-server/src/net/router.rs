@@ -79,7 +79,8 @@ handlers! {
         // Scene Commands
         CsSceneLoadFinish      => scene::on_scene_load_finish,
         CsSceneRevival         => scene::on_cs_scene_revival,
-        //CsSceneInteractiveEventTrigger     => scene::on_cs_scene_interactive_event_trigger,
+        CsSceneInteractiveEventTrigger     => scene::interactive::on_cs_scene_interactive_event_trigger,
+        CsSceneSetSafeZone => scene::interactive::on_cs_scene_set_safe_zone,
         CsSceneSetLastRecordCampid         => scene::on_cs_scene_set_last_record_campid,
         CsSceneTeleport        => scene::on_cs_scene_teleport,
         // Entity Lifecycle Commands

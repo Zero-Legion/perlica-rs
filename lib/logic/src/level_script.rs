@@ -182,7 +182,7 @@ impl LevelScriptManager {
     /// * Reconnect replays: client re-sends the same property packet.
     /// * Same-chain cascades: two `SetBool` actions in a single action-graph
     ///   chain both set progression flags, generating two property-update
-    ///   packets for one player event (e.g. `isWalkLimitFinish` → `is_G_Ob_Over`).
+    ///   packets for one player event (e.g. `isWalkLimitFinish` -> `is_G_Ob_Over`).
     pub fn try_consume_progression_flag(
         &mut self,
         scene_name: &str,
@@ -236,7 +236,7 @@ impl LevelScriptManager {
     /// Call this after any server-side scene event (`TriggerServerEvent`,
     /// script deactivation, quest-state change) so that companion scripts
     /// whose proximity edge was missed are caught without any hardcoded
-    /// event-name → script-ID mapping.
+    /// event-name -> script-ID mapping.
     pub fn activate_eligible_proximate_scripts(
         &mut self,
         scene_name: &str,
