@@ -165,29 +165,21 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
         w.exp = final_exp;
     }
 
-    let updated_target = ctx
-        .player
-        .char_bag
-        .item_manager
-        .weapons
-        .get(target_id)
-        .map(|w| w.into());
     let del_inst_list: Vec<u64> = valid_fodders.iter().map(|id| id.as_u64()).collect();
-    if updated_target.is_some() || !del_inst_list.is_empty() || !consumed_items.is_empty() {
-        let mut depot = HashMap::new();
+    let mut depot = consumed_items.build_depot_map();
+
+    if !del_inst_list.is_empty() {
         depot.insert(
             1i32,
             ScdItemDepotModify {
                 items: HashMap::new(),
-                inst_list: updated_target.into_iter().collect(),
+                inst_list: vec![],
                 del_inst_list,
             },
         );
+    }
 
-        for (depot_type, modify) in consumed_items.build_depot_map() {
-            depot.insert(depot_type, modify);
-        }
-
+    if !depot.is_empty() {
         let _ = ctx
             .notify(ScItemBagSyncModify {
                 depot,
