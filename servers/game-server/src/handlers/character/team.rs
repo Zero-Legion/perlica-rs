@@ -1,6 +1,7 @@
 //! Team composition handlers: set leader, switch active team, set members, rename.
 
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::character::char_bag::{CharIndex, Team, TeamSlot};
 use perlica_proto::{
     CsCharBagSetCurrTeamIndex, CsCharBagSetTeam, CsCharBagSetTeamLeader, CsCharBagSetTeamName,
@@ -32,6 +33,10 @@ pub async fn on_cs_char_bag_set_team_leader(
             );
         }
     }
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist char_bag after set team leader: uid={}, error={}", ctx.player.uid, e);
+    }
+
     ScCharBagSetTeamLeader {
         team_index: req.team_index,
         leaderid: req.leaderid,
@@ -86,6 +91,10 @@ pub async fn on_cs_char_bag_set_curr_team_index(
     let _ = ctx.notify(enter).await;
     let _ = ctx.notify(self_info).await;
     crate::handlers::char_bag::push_char_status_for_ids(ctx, &new_ids).await;
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist char_bag after set curr team index: uid={}, error={}", ctx.player.uid, e);
+    }
 }
 
 pub async fn on_cs_char_bag_set_team(ctx: &mut NetContext<'_>, req: CsCharBagSetTeam) {
@@ -168,6 +177,10 @@ pub async fn on_cs_char_bag_set_team(ctx: &mut NetContext<'_>, req: CsCharBagSet
         );
         let _ = ctx.notify(self_info).await;
     }
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist char_bag after set team: uid={}, error={}", ctx.player.uid, e);
+    }
 }
 
 pub async fn on_cs_char_bag_set_team_name(
@@ -183,6 +196,10 @@ pub async fn on_cs_char_bag_set_team_name(
             team_name: String::new(),
         };
     }
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist char_bag after set team name: uid={}, error={}", ctx.player.uid, e);
+    }
+
     ScCharBagSetTeamName {
         team_index: req.team_index,
         team_name: req.team_name,

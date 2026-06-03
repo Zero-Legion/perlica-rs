@@ -8,7 +8,7 @@ use crate::net::{
 };
 use crate::player::Player;
 use config::BeyondAssets;
-use perlica_db::{PlayerDb, PlayerRecordRef};
+use perlica_db::{Persistable, PlayerDb};
 use perlica_logic::traits::SyncWriteBack;
 use perlica_muip::GmResponse;
 use perlica_proto::{CsHead, prost::Message};
@@ -130,19 +130,8 @@ async fn logic_loop(
     if registered {
         player.movement.write_back_into(&mut player.world);
 
-        let record_ref = PlayerRecordRef {
-            char_bag: &player.char_bag,
-            world: &player.world,
-            bitsets: &player.bitsets,
-            checkpoint: player.scene.get_checkpoint(),
-            revival_mode: player.scene.current_revival_mode,
-            missions: &player.missions,
-            guides: &player.guides,
-            mail: &player.mail,
-        };
-
-        if let Err(e) = ctx.db.save(&player.uid, record_ref).await {
-            error!("Save failed: UID={}, Error={e}", player.uid);
+        if let Err(e) = player.world.persist(&player.uid, ctx.db).await {
+            error!("World persist failed on disconnect: UID={}, Error={e}", player.uid);
         }
 
         ctx.registry.unregister(&player.uid);

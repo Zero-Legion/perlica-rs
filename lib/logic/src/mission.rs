@@ -55,6 +55,16 @@ impl GuideManager {
         }
     }
 
+    /// Read-only accessor for the persistence layer (`perlica-db`).
+    pub fn completed_groups(&self) -> &[String] {
+        &self.completed_groups
+    }
+
+    /// Read-only accessor for the persistence layer (`perlica-db`).
+    pub fn completed_key_steps(&self) -> &[String] {
+        &self.completed_key_steps
+    }
+
     pub fn sync_packet(&self) -> ScSyncAllGuide {
         ScSyncAllGuide {
             guide_group_list: self
@@ -200,6 +210,78 @@ impl MissionManager {
 
     pub fn track_mission_id(&self) -> &str {
         &self.track_mission_id
+    }
+
+    /// Snapshot every persisted mission as flat tuples. Used by
+    /// `perlica-db` to flush the `beyond_missions` table.
+    ///
+    /// Returns owned `String`s so the caller can hand them straight
+    /// to `sqlx::query::bind` without juggling lifetimes against the
+    /// `&self` borrow that ends as soon as this call returns.
+    pub fn snapshot_missions(&self) -> Vec<(String, MissionState, i32)> {
+        self.missions
+            .values()
+            .map(|m| (m.mission_id.clone(), m.mission_state, m.succeed_id))
+            .collect()
+    }
+
+    /// Snapshot every currently active quest along with its
+    /// objectives. Used by `perlica-db` to flush `beyond_quests` and
+    /// `beyond_quest_objectives`.
+    pub fn snapshot_quests(&self) -> Vec<(String, QuestState, Vec<QuestObjective>)> {
+        self.current_quests
+            .values()
+            .map(|q| {
+                (
+                    q.quest_id.clone(),
+                    q.quest_state,
+                    q.objectives.values().cloned().collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// Bulk-insert a mission record at load time. Used by `perlica-db`
+    /// to rehydrate the manager from the `beyond_missions` table.
+    /// The mission tracker is restored separately via
+    /// [`Self::update_track_mission`].
+    pub fn insert_loaded_mission(
+        &mut self,
+        mission_id: String,
+        mission_state: MissionState,
+        succeed_id: i32,
+    ) {
+        self.missions.insert(
+            mission_id.clone(),
+            MissionProgress {
+                mission_id,
+                mission_state,
+                succeed_id,
+            },
+        );
+    }
+
+    /// Bulk-insert a quest with all of its objectives at load time.
+    /// Used by `perlica-db` to rehydrate the manager from the
+    /// `beyond_quests` + `beyond_quest_objectives` tables.
+    pub fn insert_loaded_quest(
+        &mut self,
+        quest_id: String,
+        quest_state: QuestState,
+        objectives: Vec<QuestObjective>,
+    ) {
+        let objectives_map: BTreeMap<String, QuestObjective> = objectives
+            .into_iter()
+            .map(|o| (o.condition_id.clone(), o))
+            .collect();
+        self.current_quests.insert(
+            quest_id.clone(),
+            QuestProgress {
+                quest_id,
+                quest_state,
+                objectives: objectives_map,
+            },
+        );
     }
 
     pub fn update_track_mission(&mut self, mission_id: &str) {

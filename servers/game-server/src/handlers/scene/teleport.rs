@@ -5,9 +5,10 @@
 //! don't get clobbered.
 
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::traits::SyncWriteBack;
 use perlica_proto::{CsSceneTeleport, ScSceneTeleport, Vector};
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub async fn on_cs_scene_teleport(
     ctx: &mut NetContext<'_>,
@@ -78,12 +79,18 @@ pub async fn on_cs_scene_teleport(
         })
         .unwrap_or_default();
 
-    ctx.player.scene.teleport(
+    let result = ctx.player.scene.teleport(
         obj_id_list,
         position,
         Some(rotation_vec),
         common::time::now_ms() as u32,
         req.teleport_reason,
         None,
-    )
+    );
+
+    if let Err(e) = ctx.player.world.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist world after teleport: uid={}, error={}", ctx.player.uid, e);
+    }
+
+    result
 }

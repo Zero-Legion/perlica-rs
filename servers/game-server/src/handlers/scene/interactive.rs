@@ -2,12 +2,12 @@
 
 use crate::net::NetContext;
 use config::item::{CraftShowingType, ItemDepotType, ItemKind};
+use perlica_db::{Persistable, SceneSaveState};
 use perlica_logic::enums::{ParamRealType, ParamValueType};
 use perlica_proto::{
     CsSceneInteractiveEventTrigger, CsSceneSetSafeZone, DynamicParameter, RewardItem,
-    ScRewardToSceneBegin, ScRewardToSceneEnd, ScSceneCollectionSync,
-    ScSceneInteractiveEventTrigger, ScSceneSetSafeZone, ScSceneUpdateInteractiveProperty,
-    SceneCollection,
+    ScRewardToSceneBegin, ScSceneCollectionSync, ScSceneInteractiveEventTrigger,
+    ScSceneSetSafeZone, ScSceneUpdateInteractiveProperty, SceneCollection,
 };
 use tracing::{debug, info, warn};
 
@@ -69,10 +69,26 @@ pub async fn on_cs_scene_interactive_event_trigger(
         }
     }
 
+    // If a campfire was activated, the checkpoint/revival mode changed — persist it.
+    if kind == InteractiveKind::Campfire || kind == InteractiveKind::Other {
+        if let Err(e) = (SceneSaveState {
+            checkpoint: ctx.player.scene.get_checkpoint(),
+            revival_mode: ctx.player.scene.current_revival_mode,
+        })
+        .persist(&ctx.player.uid, ctx.db)
+        .await
+        {
+            warn!(
+                "Failed to persist scene save state after interactive event: uid={}, error={}",
+                ctx.player.uid, e
+            );
+        }
+    };
+
     ScSceneInteractiveEventTrigger {}
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum InteractiveKind {
     Campfire,
     Chest,
@@ -228,7 +244,7 @@ async fn handle_chest_open(ctx: &mut NetContext<'_>, req: &CsSceneInteractiveEve
 
     let collection_list = bundles
         .iter()
-        .map(|(item_id, count)| SceneCollection {
+        .map(|(_item_id, count)| SceneCollection {
             scene_name: scene_name.clone(),
             prefab_id: "int_trchest_common_normal".to_string(),
             count: *count as i32,

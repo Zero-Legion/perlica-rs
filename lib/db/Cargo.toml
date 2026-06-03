@@ -4,8 +4,16 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-bincode = "1"
 thiserror.workspace = true
 tracing.workspace = true
-serde.workspace = true
+tokio.workspace = true
 perlica-logic.workspace = true
+perlica-proto.workspace = true
+common.workspace = true
+config.workspace = true
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "macros",
+    "migrate",
+] }

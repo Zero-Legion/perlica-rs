@@ -1,7 +1,8 @@
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::character::char_bag::{handle_weapon_attach_gem, handle_weapon_detach_gem};
 use perlica_proto::{CsWeaponAttachGem, CsWeaponDetachGem, ScWeaponAttachGem, ScWeaponDetachGem};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 /// Attaches a gem. Previous gem on target is echoed in `detach_gemid`.
 pub async fn on_cs_weapon_attach_gem(
@@ -20,6 +21,15 @@ pub async fn on_cs_weapon_attach_gem(
             "Weapon attach-gem failed: uid={}, weapon_id={}, gem_id={}, error={:?}",
             ctx.player.uid, req.weaponid, req.gemid, e
         );
+    }
+
+    if response.is_ok() {
+        if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+            warn!(
+                "Failed to persist char_bag after weapon attach gem: uid={}, error={}",
+                ctx.player.uid, e
+            );
+        }
     }
 
     response.unwrap_or(ScWeaponAttachGem {
@@ -47,6 +57,15 @@ pub async fn on_cs_weapon_detach_gem(
             "Weapon detach-gem failed: uid={}, weapon_id={}, error={:?}",
             ctx.player.uid, req.weaponid, e
         );
+    }
+
+    if response.is_ok() {
+        if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+            warn!(
+                "Failed to persist char_bag after weapon detach gem: uid={}, error={}",
+                ctx.player.uid, e
+            );
+        }
     }
 
     response.unwrap_or(ScWeaponDetachGem {

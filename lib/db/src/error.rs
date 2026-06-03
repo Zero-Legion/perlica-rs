@@ -8,28 +8,24 @@ pub enum DbError {
         source: std::io::Error,
     },
 
-    #[error("Failed to read save {path}: {source}")]
-    ReadSave {
+    #[error("Failed to open SQLite database at {path}: {source}")]
+    Open {
         path: PathBuf,
-        source: std::io::Error,
+        #[source]
+        source: sqlx::Error,
     },
 
-    #[error("Failed to deserialize save for {uid}: {source}")]
-    Deserialize { uid: String, source: bincode::Error },
+    #[error("Failed to run embedded migrations: {0}")]
+    Migrate(#[from] sqlx::migrate::MigrateError),
 
-    #[error("Failed to serialize save: {0}")]
-    Serialize(#[from] bincode::Error),
+    #[error("SQL error: {0}")]
+    Sqlx(#[from] sqlx::Error),
 
-    #[error("Failed to write tmp {path}: {source}")]
-    WriteTmp {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-
-    #[error("Failed to rename {path}: {source}")]
-    Rename {
-        path: PathBuf,
-        source: std::io::Error,
+    #[error("Data corruption while loading {what} for uid={uid}: {reason}")]
+    Corruption {
+        uid: String,
+        what: &'static str,
+        reason: String,
     },
 }
 

@@ -224,7 +224,7 @@ impl LevelScriptManager {
     /// Scan every `Enabled` script in the scene and activate any that:
     ///
     /// 1. Have at least one `startShape` whose bounding sphere contains
-    ///    `player_pos` — i.e. the player is inside the activation zone but no
+    ///    `player_pos` - i.e. the player is inside the activation zone but no
     ///    proximity-entry edge fired (already inside when eligible).
     /// 2. Have an `OnScriptStart` header at root position (`_ID = 0`).
     /// 3. Pass their `OnScriptStart` validate condition given the script's
@@ -555,7 +555,7 @@ fn build_trigger_set(script: &LvLevelScript) -> ScriptTriggerSet {
                     // Only auto-start if this header IS the root node of the
                     // action graph (_ID == 0).  When _ID > 0 the OnScriptStart
                     // handler sits inside a sequence driven by something else
-                    // (zone entry, another script, etc.) — blindly setting
+                    // (zone entry, another script, etc.) - blindly setting
                     // Active there fires tutorials before the player arrives.
                     // Though, they still do get activated so we're not using this for the time being
                     let is_root = header

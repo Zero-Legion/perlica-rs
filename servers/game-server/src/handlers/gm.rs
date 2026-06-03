@@ -1,10 +1,12 @@
 use crate::handlers::{char_bag, scene};
 use crate::net::NetContext;
 use common::time::now_ms;
+use perlica_db::Persistable;
 use perlica_logic::character::char_bag::CharIndex;
 use perlica_logic::traits::SyncWriteBack;
 use perlica_proto::{ScObjectEnterView, ScSyncBaseData, SceneObjectDetailContainer, Vector};
 use std::collections::HashSet;
+use tracing::warn;
 
 pub struct GmOutcome {
     pub message: String,
@@ -115,6 +117,10 @@ async fn heal_command(ctx: &mut NetContext<'_>, args: &[&str]) -> Result<GmOutco
         return Err("failed to sync healed state".to_string());
     }
 
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist char_bag after GM heal: uid={}, error={}", ctx.player.uid, e);
+    }
+
     GmOutcome::ok(format!(
         "healed {} character(s) {}",
         synced,
@@ -150,6 +156,10 @@ async fn set_level_command(ctx: &mut NetContext<'_>, args: &[&str]) -> Result<Gm
     })
     .await
     .map_err(|e| format!("failed to sync player level: {e}"))?;
+
+    if let Err(e) = ctx.player.world.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist world after GM set level: uid={}, error={}", ctx.player.uid, e);
+    }
 
     GmOutcome::ok(format!("set live player level to {level}"))
 }
@@ -240,6 +250,10 @@ async fn teleport_command(ctx: &mut NetContext<'_>, args: &[&str]) -> Result<GmO
     ctx.notify(msg)
         .await
         .map_err(|e| format!("failed to send teleport packet: {e}"))?;
+
+    if let Err(e) = ctx.player.world.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist world after GM teleport: uid={}, error={}", ctx.player.uid, e);
+    }
 
     GmOutcome::ok(format!(
         "teleported player to {} ({x:.2}, {y:.2}, {z:.2})",
@@ -340,6 +354,10 @@ async fn give_command(ctx: &mut NetContext<'_>, args: &[&str]) -> Result<GmOutco
 
             if !char_bag::push_item_bag_sync(ctx).await {
                 return Err("failed to push item bag sync".to_string());
+            }
+
+            if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+                warn!("Failed to persist char_bag after GM give weapon: uid={}, error={}", ctx.player.uid, e);
             }
 
             GmOutcome::ok(format!(

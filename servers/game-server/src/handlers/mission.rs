@@ -1,5 +1,6 @@
 use crate::net::NetContext;
 use common::time::now_ms;
+use perlica_db::Persistable;
 use perlica_proto::{
     CsCompleteGuideGroup, CsCompleteGuideGroupKeyStep, CsStopTrackingMission, CsTrackMission,
     CsUpdateQuestObjective, MissionState, QuestState, RoleBaseInfo, ScCompleteGuideGroup,
@@ -78,6 +79,10 @@ pub async fn on_cs_update_quest_objective(
         }
     }
 
+    if let Err(e) = ctx.player.missions.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist missions after quest objective update: uid={}, error={}", ctx.player.uid, e);
+    }
+
     update.reply_objective_update.unwrap_or_default()
 }
 
@@ -95,6 +100,10 @@ pub async fn on_cs_complete_guide_group(
         .on_guide_group_completed(&scene_name, ctx.assets);
     notify_activated_scripts(ctx, activated).await;
 
+    if let Err(e) = ctx.player.guides.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist guides after complete guide group: uid={}, error={}", ctx.player.uid, e);
+    }
+
     ScCompleteGuideGroup {
         guide_group_id: req.guide_group_id,
     }
@@ -107,6 +116,10 @@ pub async fn on_cs_complete_guide_group_key_step(
     ctx.player
         .guides
         .mark_key_step_completed(&req.guide_group_id);
+    if let Err(e) = ctx.player.guides.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist guides after complete guide key step: uid={}, error={}", ctx.player.uid, e);
+    }
+
     ScCompleteGuideGroupKeyStep {
         guide_group_id: req.guide_group_id,
     }
@@ -117,6 +130,10 @@ pub async fn on_cs_track_mission(
     req: CsTrackMission,
 ) -> ScTrackMissionChange {
     ctx.player.missions.update_track_mission(&req.mission_id);
+    if let Err(e) = ctx.player.missions.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist missions after track mission: uid={}, error={}", ctx.player.uid, e);
+    }
+
     ScTrackMissionChange {
         mission_id: req.mission_id,
     }
@@ -127,6 +144,10 @@ pub async fn on_cs_stop_tracking_mission(
     _req: CsStopTrackingMission,
 ) -> ScTrackMissionChange {
     ctx.player.missions.stop_tracking();
+    if let Err(e) = ctx.player.missions.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist missions after stop tracking: uid={}, error={}", ctx.player.uid, e);
+    }
+
     ScTrackMissionChange {
         mission_id: String::new(),
     }

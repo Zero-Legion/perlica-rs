@@ -49,13 +49,13 @@
 ### Administration
 - **MUIP GM bridge** (`perlica-muip-server`): HTTP admin panel on port 8080 with endpoints `/muip/gm`, `/status`, `/api/players`; forwards commands to the game server over a local TCP socket
 - **In-game GM commands** (via MUIP HTTP or the web panel):
-  - `help` — list all commands
-  - `heal [all|team]` — restore HP to full for all owned characters or the active team
-  - `level <n>` — set the player's role level (1–100) live
-  - `tp <scene> <x> <y> <z> [rot_y]` — teleport to any scene and position
-  - `spawn <template> [x y z] [level] [entity_type]` — dynamically spawn a monster
-  - `give weapon <template>` — add a weapon instance and sync the item bag
-  - `kick [reason]` — disconnect the player
+  - `help` - list all commands
+  - `heal [all|team]` - restore HP to full for all owned characters or the active team
+  - `level <n>` - set the player's role level (1–100) live
+  - `tp <scene> <x> <y> <z> [rot_y]` - teleport to any scene and position
+  - `spawn <template> [x y z] [level] [entity_type]` - dynamically spawn a monster
+  - `give weapon <template>` - add a weapon instance and sync the item bag
+  - `kick [reason]` - disconnect the player
 
 
 ---
@@ -199,9 +199,9 @@ Each library crate has its own `error.rs`. Use the most specific variant availab
 | `logic` | `LogicError` | `NotFound`, `InvalidOperation`, `Insufficient` *(typed quantity error, use instead of string-formatted `InvalidOperation` for stackable-item shortfalls)*, `Config` |
 | `game-server` | `ServerError` | `Config`, `Db`, `Logic`, `Io`, `Decode`, `ConfigRead`, `ConfigParse` |
 
-**`LogicError::Insufficient { item_id, have, need }`** — use this instead of `InvalidOperation(format!("Insufficient …"))` whenever a stackable-item consume fails due to quantity. Callers can match on it without parsing the message string.
+**`LogicError::Insufficient { item_id, have, need }`** - use this instead of `InvalidOperation(format!("Insufficient …"))` whenever a stackable-item consume fails due to quantity. Callers can match on it without parsing the message string.
 
-**`ConfigError::InvalidStructure { path, message }`** — use this for files that parse as valid JSON but whose top-level shape is wrong, instead of wrapping `std::io::Error::new(InvalidData, …)` inside `ConfigError::Io`.
+**`ConfigError::InvalidStructure { path, message }`** - use this for files that parse as valid JSON but whose top-level shape is wrong, instead of wrapping `std::io::Error::new(InvalidData, …)` inside `ConfigError::Io`.
 
 ### Other notes
 - Logging starts at DEBUG level with an ANSI art startup banner.

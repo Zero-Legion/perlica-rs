@@ -1,6 +1,7 @@
 //! Character/monster kills, revival, and campfire checkpoints.
 
 use crate::net::NetContext;
+use perlica_db::{Persistable, SceneSaveState};
 use perlica_logic::character::char_bag::CharIndex;
 use perlica_logic::scene::EntityDestroyReason;
 use perlica_logic::traits::Classified;
@@ -8,7 +9,7 @@ use perlica_proto::{
     BattleInfo, CsSceneKillChar, CsSceneKillMonster, CsSceneRevival, CsSceneSetLastRecordCampid,
     ScCharSyncStatus, ScObjectEnterView, ScSceneSetLastRecordCampid,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Removes a monster entity and notifies the client with `ScSceneDestroyEntity`.
 pub async fn on_cs_scene_kill_monster(ctx: &mut NetContext<'_>, req: CsSceneKillMonster) {
@@ -44,6 +45,13 @@ pub async fn on_cs_scene_kill_char(ctx: &mut NetContext<'_>, req: CsSceneKillCha
     if let Err(error) = ctx.notify(msg).await {
         error!("Failed to send character kill notification: {:?}", error);
     }
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!(
+            "Failed to persist char_bag after char kill: uid={}, error={}",
+            ctx.player.uid, e
+        );
+    }
 }
 
 /// Handles `CsSceneRevival`, revives all dead characters in the current team
@@ -52,8 +60,8 @@ pub async fn on_cs_scene_kill_char(ctx: &mut NetContext<'_>, req: CsSceneKillCha
 /// Send order:
 /// 1. `ScCharSyncStatus` × N, HP per revived char
 /// 2. `ScSelfSceneInfo` with `revive_chars`, triggers client revival logic
-/// 3. `ScSceneRevival` — revival UI/effect
-/// 4. `ScObjectEnterView` — reply, re-enters chars into the scene
+/// 3. `ScSceneRevival` - revival UI/effect
+/// 4. `ScObjectEnterView` - reply, re-enters chars into the scene
 pub async fn on_cs_scene_revival(
     ctx: &mut NetContext<'_>,
     _req: CsSceneRevival,
@@ -76,6 +84,13 @@ pub async fn on_cs_scene_revival(
 
     if let Err(error) = ctx.notify(revival).await {
         error!("Failed to send revival notification: {:?}", error);
+    }
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!(
+            "Failed to persist char_bag after revival: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     enter_view
@@ -122,7 +137,7 @@ async fn send_revival_status_updates(ctx: &mut NetContext<'_>) {
 /// Stores the campfire as the current checkpoint so revival/repatriation return here.
 ///
 /// Send order:
-///   1. `ScSceneSetLastRecordCampid` — ACK echoing the camp id back.
+///   1. `ScSceneSetLastRecordCampid` - ACK echoing the camp id back.
 pub async fn on_cs_scene_set_last_record_campid(
     ctx: &mut NetContext<'_>,
     req: CsSceneSetLastRecordCampid,
@@ -142,6 +157,19 @@ pub async fn on_cs_scene_set_last_record_campid(
     ctx.player
         .scene
         .set_revival_mode(perlica_logic::scene::RevivalMode::CheckPoint);
+
+    if let Err(e) = (SceneSaveState {
+        checkpoint: ctx.player.scene.get_checkpoint(),
+        revival_mode: ctx.player.scene.current_revival_mode,
+    })
+    .persist(&ctx.player.uid, ctx.db)
+    .await
+    {
+        warn!(
+            "Failed to persist scene save state after set last camp: uid={}, error={}",
+            ctx.player.uid, e
+        );
+    }
 
     ScSceneSetLastRecordCampid {
         last_camp_id: req.last_camp_id,

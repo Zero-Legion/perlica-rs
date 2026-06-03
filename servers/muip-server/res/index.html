@@ -1292,10 +1292,10 @@
                 document.getElementById("s-status").className = "stat-val rose";
                 document.getElementById("s-status-sub").textContent =
                     "unreachable";
-                document.getElementById("s-ping").textContent = "—";
+                document.getElementById("s-ping").textContent = "-";
                 document.getElementById("s-ping-sub").textContent =
                     "no response";
-                document.getElementById("s-players").textContent = "—";
+                document.getElementById("s-players").textContent = "-";
                 document.getElementById("s-players-sub").textContent =
                     "no data";
                 document.getElementById("status-chip").innerHTML =
@@ -1394,7 +1394,7 @@
 
                 if (!tok) {
                     addLine(
-                        "No token set — enter it in the sidebar.",
+                        "No token set - enter it in the sidebar.",
                         "warn",
                         "⚠",
                     );
@@ -1404,7 +1404,7 @@
                 // Only enforce UID for commands that actually need one
                 if (requiresUid(cmd) && !uid) {
                     addLine(
-                        "No UID — click a player or type one.",
+                        "No UID - click a player or type one.",
                         "warn",
                         "⚠",
                     );

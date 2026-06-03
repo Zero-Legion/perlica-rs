@@ -1,5 +1,6 @@
 use crate::net::NetContext;
 use config::item::{CraftShowingType, ItemDepotType};
+use perlica_db::Persistable;
 use perlica_logic::item::{EquipInstId, GemInstId, WeaponInstId};
 use perlica_proto::{
     CsEquipPutoff, CsEquipPuton, CsRemoveItemNewTags, ScEquipPutoff, ScEquipPuton,
@@ -76,7 +77,7 @@ pub async fn on_cs_equip_puton(ctx: &mut NetContext<'_>, req: CsEquipPuton) -> S
         };
     }
 
-    match ctx
+    let response = match ctx
         .player
         .char_bag
         .item_manager
@@ -103,14 +104,14 @@ pub async fn on_cs_equip_puton(ctx: &mut NetContext<'_>, req: CsEquipPuton) -> S
                 "EquipPuton: uid={}, char={}, equip={}, displaced={:?}, put_off_charid={}",
                 ctx.player.uid, req.charid, req.equipid, displaced, put_off_charid
             );
-            ScEquipPuton {
+            return ScEquipPuton {
                 charid: req.charid,
                 slotid: req.slotid,
                 equipid: req.equipid,
                 suitinfo,
                 put_off_charid,
                 old_owner_suitinfo,
-            }
+            };
         }
         Err(e) => {
             error!(
@@ -126,7 +127,16 @@ pub async fn on_cs_equip_puton(ctx: &mut NetContext<'_>, req: CsEquipPuton) -> S
                 old_owner_suitinfo: HashMap::new(),
             }
         }
+    };
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!(
+            "Failed to persist char_bag after equip puton: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
+
+    response
 }
 
 /// Unequips the piece in `slotid` from a character.
@@ -175,6 +185,13 @@ pub async fn on_cs_equip_putoff(ctx: &mut NetContext<'_>, req: CsEquipPutoff) ->
         .item_manager
         .equips
         .compute_suitinfo(req.charid, ctx.assets);
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!(
+            "Failed to persist char_bag after equip putoff: uid={}, error={}",
+            ctx.player.uid, e
+        );
+    }
 
     ScEquipPutoff {
         charid: req.charid,
@@ -239,6 +256,13 @@ pub async fn on_cs_remove_item_new_tags(
                 );
             }
         }
+    }
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!(
+            "Failed to persist char_bag after remove item new tags: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScRemoveItemNewTags {}

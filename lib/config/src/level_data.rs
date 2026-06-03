@@ -2,7 +2,7 @@
 //!
 //! Loads all `*lv_data*.json` files from `assets/level_data/`, merging
 //! multiple sub-files for the same scene by `sceneId`. Exposes the full
-//! scene contents — enemies, interactives, NPCs, level scripts, patrols,
+//! scene contents - enemies, interactives, NPCs, level scripts, patrols,
 //! enemy groups, factory regions, splines, and safe zones.
 //!
 //! Expected asset layout:
@@ -92,14 +92,14 @@ impl LevelDataAssets {
 
             let scene = scenes.entry(file.scene_id.clone()).or_default();
 
-            // Enemies — skip defaultHide (revealed by level scripts)
+            // Enemies - skip defaultHide (revealed by level scripts)
             scene
                 .enemies
                 .extend(file.enemies.into_iter().filter(|e| !e.base.default_hide));
             scene.enemy_groups.extend(file.enemy_groups);
             scene.patrols.extend(file.patrols);
 
-            // Interactives — keep all; defaultHide ones are managed by level scripts
+            // Interactives - keep all; defaultHide ones are managed by level scripts
             scene
                 .npcs
                 .extend(file.npcs.into_iter().filter(|n| !n.base.default_hide));

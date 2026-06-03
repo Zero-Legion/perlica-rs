@@ -25,7 +25,7 @@ async fn main() -> Result<(), error::ServerError> {
     let registry = SessionRegistry::new();
     let registry: &'static SessionRegistry = Box::leak(Box::new(registry));
 
-    let db = PlayerDb::open("saves")?;
+    let db = PlayerDb::open("saves").await?;
     let db: &'static PlayerDb = Box::leak(Box::new(db));
 
     if cfg.muip.enabled {

@@ -1,4 +1,4 @@
-//! Command router — maps incoming `cmd_id` values to their handler functions.
+//! Command router - maps incoming `cmd_id` values to their handler functions.
 //!
 //! To add a handler: create the fn in `handlers/<feature>.rs`, import the module
 //! in `handlers/mod.rs`, then add `CsMyCommand => feature::on_cs_my_command` to

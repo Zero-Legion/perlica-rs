@@ -1,4 +1,5 @@
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::bitset::BitsetType;
 use perlica_proto::{
     BitsetData, CsBitsetAdd, CsBitsetRemove, ScBitsetAdd, ScBitsetRemove, ScSyncAllBitset,
@@ -31,6 +32,10 @@ pub async fn on_cs_bitset_add(ctx: &mut NetContext<'_>, req: CsBitsetAdd) -> ScB
         req.value.len()
     );
 
+    if let Err(e) = ctx.player.bitsets.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist bitsets after add: uid={}, error={}", ctx.player.uid, e);
+    }
+
     ScBitsetAdd {
         r#type: req.r#type,
         value: req.value.clone(),
@@ -61,6 +66,10 @@ pub async fn on_cs_bitset_remove(ctx: &mut NetContext<'_>, req: CsBitsetRemove) 
         type_name,
         req.value.len()
     );
+
+    if let Err(e) = ctx.player.bitsets.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist bitsets after remove: uid={}, error={}", ctx.player.uid, e);
+    }
 
     ScBitsetRemove {
         r#type: req.r#type,

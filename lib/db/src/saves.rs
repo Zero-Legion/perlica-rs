@@ -1,59 +1,31 @@
 use crate::error::{DbError, Result};
+use crate::persistable::Persistable;
+use crate::subsystems::{bitsets, char_bag, guides, mail, missions, player_root, scene};
 use perlica_logic::bitset::BitsetManager;
 use perlica_logic::character::char_bag::CharBag;
 use perlica_logic::mail::MailManager;
 use perlica_logic::mission::{GuideManager, MissionManager};
 use perlica_logic::player::WorldState;
 use perlica_logic::scene::{CheckpointInfo, RevivalMode};
-use serde::{Deserialize, Serialize};
-use std::fs;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use tracing::{debug, info};
 
-/// # What is saved and why
-///
-/// - `char_bag`: All characters, teams, skill levels, and the embedded
-///   `WeaponDepot`. This is the primary player progression record.
-///   Weapons live inside `CharBag.weapon_depot`; there is no separate
-///   top-level weapon field.
-///
-/// - `world`: Current scene name, player position/rotation, role level and
-///   exp. Position is synced from `MovementManager` into `WorldState` just
-///   before this record is written so the player respawns at their last
-///   known location.
-///
-/// - `bitsets`: All boolean flag sets (items found, areas visited, wiki
-///   entries read, etc.).
-///
-/// - `checkpoint`: The last repatriate / rest-point the player activated.
-///   `None` for new players. Needed so the revival flow sends the player
-///   back to the right spot after a full wipe.
-///
-/// - `revival_mode`: Whether the player is using the default respawn, a
-///   repatriate point, or a dungeon checkpoint. Persisted so the correct
-///   mode is restored on login.
-///
-#[derive(Serialize, Deserialize)]
+pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
 pub struct PlayerRecord {
     pub char_bag: CharBag,
     pub world: WorldState,
-    #[serde(default)]
     pub bitsets: BitsetManager,
-    #[serde(default)]
     pub checkpoint: Option<CheckpointInfo>,
-    #[serde(default)]
     pub revival_mode: RevivalMode,
-    #[serde(default)]
     pub missions: MissionManager,
-    #[serde(default)]
     pub guides: GuideManager,
-    #[serde(default)]
     pub mail: MailManager,
 }
 
-/// A strictly borrowed version of `PlayerRecord` used to avoid allocations
-/// and cloning during the serialization process.
-/// According to DotRh, suggestion of cloning everywhere being a bad idea.
-#[derive(Serialize)]
 pub struct PlayerRecordRef<'a> {
     pub char_bag: &'a CharBag,
     pub world: &'a WorldState,
@@ -90,60 +62,261 @@ impl<'a> PlayerRecordRef<'a> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PlayerDb {
-    dir: PathBuf,
+    pool: SqlitePool,
 }
 
 impl PlayerDb {
-    pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
-        let dir = dir.as_ref().to_path_buf();
-        fs::create_dir_all(&dir).map_err(|e| DbError::CreateDir {
+    pub async fn open(dir: impl AsRef<Path>) -> Result<Self> {
+        let dir: PathBuf = dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&dir).map_err(|e| DbError::CreateDir {
             path: dir.clone(),
             source: e,
         })?;
-        Ok(Self { dir })
-    }
 
-    pub async fn load(&self, uid: &str) -> Result<Option<PlayerRecord>> {
-        let path = self.path(uid);
-        if !path.exists() {
-            return Ok(None);
-        }
-        let bytes = fs::read(&path).map_err(|e| DbError::ReadSave {
-            path: path.clone(),
-            source: e,
-        })?;
-        let mut record: PlayerRecord =
-            bincode::deserialize(&bytes).map_err(|e| DbError::Deserialize {
-                uid: uid.to_string(),
+        let db_path = dir.join("perlica.sqlite");
+        let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
+            .map_err(|e| DbError::Open {
+                path: db_path.clone(),
+                source: e,
+            })?
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal)
+            .foreign_keys(true);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(8)
+            .connect_with(opts)
+            .await
+            .map_err(|e| DbError::Open {
+                path: db_path.clone(),
                 source: e,
             })?;
 
-        // Repair any data inconsistencies that may have crept in (mismatched
-        // weapon references, stale cache fields, etc.).
-        record.char_bag.validate_after_load();
+        // Apply embedded migrations.
+        MIGRATOR.run(&pool).await?;
 
-        Ok(Some(record))
+        info!("Opened SQLite player DB at {}", db_path.display());
+        Ok(Self { pool })
     }
 
-    pub async fn save<'a>(&self, uid: &str, record_ref: PlayerRecordRef<'a>) -> Result<()> {
-        let bytes = bincode::serialize(&record_ref)?;
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
 
-        let path = self.path(uid);
-        let tmp = path.with_extension("bin.tmp");
-        fs::write(&tmp, &bytes).map_err(|e| DbError::WriteTmp {
-            path: tmp.clone(),
-            source: e,
-        })?;
-        fs::rename(&tmp, &path).map_err(|e| DbError::Rename {
-            path: path.clone(),
-            source: e,
-        })?;
-
+    pub(crate) async fn ensure_player_row(
+        tx: &mut Transaction<'_, Sqlite>,
+        uid: &str,
+    ) -> Result<()> {
+        sqlx::query("INSERT OR IGNORE INTO beyond_players (uid) VALUES (?1)")
+            .bind(uid)
+            .execute(&mut **tx)
+            .await?;
         Ok(())
     }
 
-    fn path(&self, uid: &str) -> PathBuf {
-        self.dir.join(format!("{uid}.bin"))
+    pub async fn load(&self, uid: &str) -> Result<Option<PlayerRecord>> {
+        let Some(root) = player_root::load(&self.pool, uid).await? else {
+            return Ok(None);
+        };
+
+        let mut char_bag = char_bag::load(&self.pool, uid).await?;
+        // Restore curr_team_index that lives on the player root row.
+        char_bag.meta.curr_team_index = root.curr_team_index;
+        // Restore inst-id allocators so newly added items don't collide
+        // with the ids already in the depots.
+        char_bag
+            .item_manager
+            .weapons
+            .set_next_inst_id(root.weapon_next_inst_id);
+        char_bag
+            .item_manager
+            .gems
+            .set_next_inst_id(root.gem_next_inst_id);
+        char_bag
+            .item_manager
+            .equips
+            .set_next_inst_id(root.equip_next_inst_id);
+
+        char_bag.validate_after_load();
+
+        let bitsets = bitsets::load(&self.pool, uid).await?;
+
+        let mut missions = missions::load(&self.pool, uid).await?;
+        missions.update_track_mission(&root.track_mission_id);
+
+        let guides = guides::load(&self.pool, uid).await?;
+
+        let mut mail = mail::load(&self.pool, uid).await?;
+        mail.set_next_id(root.mail_next_id);
+
+        let world = WorldState {
+            role_level: root.role_level,
+            role_exp: root.role_exp,
+            last_scene: root.last_scene,
+            pos_x: root.pos_x,
+            pos_y: root.pos_y,
+            pos_z: root.pos_z,
+            rot_x: root.rot_x,
+            rot_y: root.rot_y,
+            rot_z: root.rot_z,
+        };
+
+        let checkpoint = match (
+            root.checkpoint_scene,
+            root.checkpoint_x,
+            root.checkpoint_y,
+            root.checkpoint_z,
+        ) {
+            (Some(s), Some(x), Some(y), Some(z)) => Some(CheckpointInfo {
+                scene_name: s,
+                pos_x: x,
+                pos_y: y,
+                pos_z: z,
+            }),
+            _ => None,
+        };
+
+        debug!("Loaded player from DB: uid={}", uid);
+        Ok(Some(PlayerRecord {
+            char_bag,
+            world,
+            bitsets,
+            checkpoint,
+            revival_mode: root.revival_mode,
+            missions,
+            guides,
+            mail,
+        }))
+    }
+
+    pub async fn save<'a>(&self, uid: &str, record: PlayerRecordRef<'a>) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        Self::ensure_player_row(&mut tx, uid).await?;
+
+        player_root::write(
+            &mut tx,
+            uid,
+            player_root::Row {
+                role_level: record.world.role_level,
+                role_exp: record.world.role_exp,
+                last_scene: record.world.last_scene.clone(),
+                pos_x: record.world.pos_x,
+                pos_y: record.world.pos_y,
+                pos_z: record.world.pos_z,
+                rot_x: record.world.rot_x,
+                rot_y: record.world.rot_y,
+                rot_z: record.world.rot_z,
+                curr_team_index: record.char_bag.meta.curr_team_index,
+                track_mission_id: record.missions.track_mission_id().to_string(),
+                revival_mode: record.revival_mode,
+                checkpoint_scene: record.checkpoint.map(|c| c.scene_name.clone()),
+                checkpoint_x: record.checkpoint.map(|c| c.pos_x),
+                checkpoint_y: record.checkpoint.map(|c| c.pos_y),
+                checkpoint_z: record.checkpoint.map(|c| c.pos_z),
+                weapon_next_inst_id: record.char_bag.item_manager.weapons.next_inst_id(),
+                gem_next_inst_id: record.char_bag.item_manager.gems.next_inst_id(),
+                equip_next_inst_id: record.char_bag.item_manager.equips.next_inst_id(),
+                mail_next_id: record.mail.next_id(),
+                updated_at: common::time::now_ms() as i64,
+            },
+        )
+        .await?;
+
+        char_bag::write(&mut tx, uid, record.char_bag).await?;
+        bitsets::write(&mut tx, uid, record.bitsets).await?;
+        missions::write(&mut tx, uid, record.missions).await?;
+        guides::write(&mut tx, uid, record.guides).await?;
+        mail::write(&mut tx, uid, record.mail).await?;
+
+        tx.commit().await?;
+        debug!("Full save complete for uid={}", uid);
+        Ok(())
+    }
+}
+
+impl Persistable for WorldState {
+    async fn persist(&self, uid: &str, db: &PlayerDb) -> Result<()> {
+        let mut tx = db.pool.begin().await?;
+        PlayerDb::ensure_player_row(&mut tx, uid).await?;
+        player_root::update_world(&mut tx, uid, self).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+impl Persistable for CharBag {
+    async fn persist(&self, uid: &str, db: &PlayerDb) -> Result<()> {
+        let mut tx = db.pool.begin().await?;
+        PlayerDb::ensure_player_row(&mut tx, uid).await?;
+        player_root::update_char_bag_scalars(&mut tx, uid, self).await?;
+        char_bag::write(&mut tx, uid, self).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+impl Persistable for BitsetManager {
+    async fn persist(&self, uid: &str, db: &PlayerDb) -> Result<()> {
+        let mut tx = db.pool.begin().await?;
+        PlayerDb::ensure_player_row(&mut tx, uid).await?;
+        bitsets::write(&mut tx, uid, self).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+impl Persistable for MissionManager {
+    async fn persist(&self, uid: &str, db: &PlayerDb) -> Result<()> {
+        let mut tx = db.pool.begin().await?;
+        PlayerDb::ensure_player_row(&mut tx, uid).await?;
+        player_root::update_track_mission(&mut tx, uid, self.track_mission_id()).await?;
+        missions::write(&mut tx, uid, self).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+impl Persistable for GuideManager {
+    async fn persist(&self, uid: &str, db: &PlayerDb) -> Result<()> {
+        let mut tx = db.pool.begin().await?;
+        PlayerDb::ensure_player_row(&mut tx, uid).await?;
+        guides::write(&mut tx, uid, self).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+impl Persistable for MailManager {
+    async fn persist(&self, uid: &str, db: &PlayerDb) -> Result<()> {
+        let mut tx = db.pool.begin().await?;
+        PlayerDb::ensure_player_row(&mut tx, uid).await?;
+        player_root::update_mail_next_id(&mut tx, uid, self.next_id()).await?;
+        mail::write(&mut tx, uid, self).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+}
+
+/// `SceneManager` has lots of *runtime* state (entity caches, spatial
+/// grids, …) that has no business being saved. Wrapping just the two
+/// persisted fields in a tiny holder gives handlers a clean
+/// `SceneSaveState { ... }.persist(uid, db).await?` call site without
+/// dragging the whole manager into the DB crate.
+pub struct SceneSaveState<'a> {
+    pub checkpoint: Option<&'a CheckpointInfo>,
+    pub revival_mode: RevivalMode,
+}
+
+impl<'a> Persistable for SceneSaveState<'a> {
+    async fn persist(&self, uid: &str, db: &PlayerDb) -> Result<()> {
+        let mut tx = db.pool.begin().await?;
+        PlayerDb::ensure_player_row(&mut tx, uid).await?;
+        scene::update_checkpoint(&mut tx, uid, self.checkpoint, self.revival_mode).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }

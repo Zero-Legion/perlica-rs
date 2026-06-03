@@ -1,6 +1,7 @@
 //! Battle-state synchronisation for characters.
 
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_proto::CsCharSetBattleInfo;
 use tracing::{debug, warn};
 
@@ -19,5 +20,10 @@ pub async fn on_cs_char_set_battle_info(ctx: &mut NetContext<'_>, req: CsCharSet
             "Battle info update ignored: missing data for objid={}",
             req.objid
         );
+        return;
+    }
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist char_bag after battle info update: uid={}, error={}", ctx.player.uid, e);
     }
 }

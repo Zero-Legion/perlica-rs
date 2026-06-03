@@ -1,4 +1,5 @@
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::item::{ConsumedItems, WeaponInstId};
 use perlica_proto::{CsWeaponAddExp, ScItemBagSyncModify, ScWeaponAddExp, ScdItemDepotModify};
 use std::collections::HashMap;
@@ -196,6 +197,10 @@ pub async fn on_cs_weapon_add_exp(ctx: &mut NetContext<'_>, req: CsWeaponAddExp)
         "WeaponAddExp: uid={}, weapon={}, +{}exp, lv {}->{}",
         ctx.player.uid, req.weaponid, total_exp_gained, current_level, final_lv
     );
+
+    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist char_bag after weapon add exp: uid={}, error={}", ctx.player.uid, e);
+    }
 
     ScWeaponAddExp {
         weaponid: req.weaponid,

@@ -1,7 +1,8 @@
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::character::char_bag::handle_weapon_puton;
 use perlica_proto::{CsWeaponPuton, ScWeaponPuton};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 /// Equips a weapon, unequipping it from its previous owner first.
 /// Returns zero `weaponid` on failure.
@@ -18,6 +19,15 @@ pub async fn on_cs_weapon_puton(ctx: &mut NetContext<'_>, req: CsWeaponPuton) ->
             "Weapon put-on failed: uid={}, char_id={}, weapon_id={}, error={:?}",
             ctx.player.uid, req.charid, req.weaponid, e
         );
+    }
+
+    if response.is_ok() {
+        if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+            warn!(
+                "Failed to persist char_bag after weapon puton: uid={}, error={}",
+                ctx.player.uid, e
+            );
+        }
     }
 
     response.unwrap_or(ScWeaponPuton {

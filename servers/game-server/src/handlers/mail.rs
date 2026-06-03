@@ -1,4 +1,5 @@
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::mail::StoredMail;
 use perlica_proto::{
     CsDeleteAllMail, CsDeleteMail, CsGetAllMailAttachment, CsGetMail, CsGetMailAttachment,
@@ -52,6 +53,10 @@ pub async fn deliver_login_mails(ctx: &mut NetContext<'_>, is_new_player: bool) 
             ctx.player.uid, e
         );
     }
+
+    if let Err(e) = ctx.player.mail.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist mail after deliver login mail: uid={}, error={}", ctx.player.uid, e);
+    }
 }
 
 pub async fn on_cs_get_mail(ctx: &mut NetContext<'_>, req: CsGetMail) -> ScGetMail {
@@ -82,6 +87,10 @@ pub async fn on_cs_read_mail(ctx: &mut NetContext<'_>, req: CsReadMail) -> ScRea
         );
     }
 
+    if let Err(e) = ctx.player.mail.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist mail after read: uid={}, error={}", ctx.player.uid, e);
+    }
+
     ScReadMail {
         mail_id: req.mail_id,
     }
@@ -98,6 +107,10 @@ pub async fn on_cs_delete_mail(ctx: &mut NetContext<'_>, req: CsDeleteMail) -> S
             "CsDeleteMail: mail not found: uid={}, mail_id={}",
             ctx.player.uid, req.mail_id
         );
+    }
+
+    if let Err(e) = ctx.player.mail.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist mail after delete: uid={}, error={}", ctx.player.uid, e);
     }
 
     ScDelMailNotify {
@@ -120,6 +133,10 @@ pub async fn on_cs_delete_all_mail(
         deleted.len(),
         ctx.player.uid
     );
+
+    if let Err(e) = ctx.player.mail.persist(&ctx.player.uid, ctx.db).await {
+        warn!("Failed to persist mail after delete all: uid={}, error={}", ctx.player.uid, e);
+    }
 
     ScDelMailNotify {
         mail_id_list: deleted,
@@ -144,6 +161,9 @@ pub async fn on_cs_get_mail_attachment(
                 ctx.player.uid
             );
             // TODO: actually grant items to player inventory here.
+            if let Err(e) = ctx.player.mail.persist(&ctx.player.uid, ctx.db).await {
+                warn!("Failed to persist mail after claim attachment: uid={}, error={}", ctx.player.uid, e);
+            }
             ScGetMailAttachment {
                 success_mail_id_list: vec![req.mail_id],
                 failed_mail_id_list: vec![],
@@ -181,6 +201,12 @@ pub async fn on_cs_get_all_mail_attachment(
     );
 
     // TODO: grant items for each success ID.
+    if !success.is_empty() {
+        if let Err(e) = ctx.player.mail.persist(&ctx.player.uid, ctx.db).await {
+            warn!("Failed to persist mail after claim all attachments: uid={}, error={}", ctx.player.uid, e);
+        }
+    }
+
     ScGetMailAttachment {
         success_mail_id_list: success,
         failed_mail_id_list: failed,

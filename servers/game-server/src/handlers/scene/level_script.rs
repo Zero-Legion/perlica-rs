@@ -1,6 +1,7 @@
 //! Level-script state updates and event triggers.
 
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_proto::{
     CsSceneCommitLevelScriptCacheStep, CsSceneLevelScriptEventTrigger, CsSceneSetLevelScriptActive,
     CsSceneUpdateInteractiveProperty, CsSceneUpdateLevelScriptProperty, DynamicParameter,
@@ -90,6 +91,7 @@ async fn maybe_drive_quest_progression<'a>(
     // lets two flags in the same packet each advance their own step without
     // collapsing into a single advance or double-advancing the same step.
     let mut advance_count = 0u32;
+    let mut did_advance = false;
     for (key, value) in properties {
         if !is_progression_flag(scene, script_id, key) || !property_is_true(value) {
             continue;
@@ -101,6 +103,7 @@ async fn maybe_drive_quest_progression<'a>(
             .try_consume_progression_flag(scene, script_id, key)
         {
             advance_count += 1;
+            did_advance = true;
             debug!(
                 "Server-driven quest progression triggered by {}::{}::{}",
                 scene, script_id, key
@@ -180,6 +183,12 @@ async fn maybe_drive_quest_progression<'a>(
         //    ScQuestStateUpdate so trackQuestData will resolve correctly.
         for n in update.notify_objective_updates {
             let _ = ctx.notify(n).await;
+        }
+    }
+
+    if did_advance {
+        if let Err(e) = ctx.player.missions.persist(&ctx.player.uid, ctx.db).await {
+            debug!("Failed to persist missions after quest progression: uid={}, error={}", ctx.player.uid, e);
         }
     }
 }

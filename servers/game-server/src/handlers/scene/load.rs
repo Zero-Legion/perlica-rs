@@ -1,6 +1,7 @@
 //! Scene enter / load-finish handshake.
 
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::traits::Positioned3D;
 use perlica_proto::{CsSceneLoadFinish, ScEnterSceneNotify, ScSelfSceneInfo, Vector};
 use tracing::{debug, error, info};
@@ -70,6 +71,10 @@ pub async fn on_scene_load_finish(
 
     if !post_load_sync(ctx).await {
         error!("Failed to complete post-load sync");
+    }
+
+    if let Err(e) = ctx.player.world.persist(&ctx.player.uid, ctx.db).await {
+        error!("Failed to persist world after scene load finish: uid={}, error={}", ctx.player.uid, e);
     }
 
     self_info

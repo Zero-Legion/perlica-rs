@@ -1,11 +1,12 @@
 use crate::net::NetContext;
+use perlica_db::Persistable;
 use perlica_logic::character::char_bag::handle_weapon_breakthrough;
 use perlica_logic::item::WALLET_GOLD_AMOUNT;
 use perlica_proto::{
     CsWeaponBreakthrough, MoneyInfo, ScItemBagSyncModify, ScSyncWallet, ScWeaponBreakthrough,
 };
 use std::collections::HashMap;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Advances breakthrough level by one. Weapon must be at its current level cap.
 pub async fn on_cs_weapon_breakthrough(
@@ -53,6 +54,13 @@ pub async fn on_cs_weapon_breakthrough(
                 "Weapon breakthrough success: uid={}, weapon_id={}, new_lv={}, gold_cost={}",
                 ctx.player.uid, req.weaponid, result.response.breakthrough_lv, result.gold_cost
             );
+
+            if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+                warn!(
+                    "Failed to persist char_bag after weapon breakthrough: uid={}, error={}",
+                    ctx.player.uid, e
+                );
+            }
 
             result.response
         }
