@@ -48,6 +48,7 @@ pub mod container;
 pub mod id;
 pub mod item;
 pub mod lifecycle;
+pub mod pending;
 pub mod player;
 pub mod proto;
 pub mod sync;
@@ -62,6 +63,7 @@ pub use container::{
 pub use id::{AsU64, InstanceId};
 pub use item::{Attachable, Identifiable, Lockable, NewFlaggable, Owned, Templated};
 pub use lifecycle::Expirable;
+pub use pending::{PendingChanges, PendingSnapshot};
 pub use player::PlayerComponent;
 pub use proto::{ToProto, ToProtoWith};
 pub use sync::SyncWriteBack;
@@ -82,6 +84,7 @@ pub mod prelude {
     pub use super::id::{AsU64, InstanceId};
     pub use super::item::{Attachable, Identifiable, Lockable, NewFlaggable, Owned, Templated};
     pub use super::lifecycle::Expirable;
+    pub use super::pending::{PendingChanges, PendingSnapshot};
     pub use super::player::PlayerComponent;
     pub use super::proto::{ToProto, ToProtoWith};
     pub use super::sync::SyncWriteBack;

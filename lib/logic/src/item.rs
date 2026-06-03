@@ -1,5 +1,5 @@
 use crate::error::{LogicError, Result};
-use crate::traits::{KeyedContainerExt, Lockable, NewFlaggable};
+use crate::traits::{KeyedContainerExt, Lockable, NewFlaggable, PendingChanges};
 use common::time::now_ms;
 use config::BeyondAssets;
 use config::item::{CraftShowingType, ItemDepotType, ItemKind};
@@ -204,6 +204,8 @@ pub struct WeaponDepot {
     weapons: HashMap<WeaponInstId, WeaponInstance>,
     next_inst_id: u64,
     equipped_weapons: HashMap<u64, WeaponInstId>,
+    #[serde(skip)]
+    pending: PendingChanges<WeaponInstId>,
 }
 
 impl WeaponDepot {
@@ -214,7 +216,20 @@ impl WeaponDepot {
             weapons: HashMap::new(),
             next_inst_id: 1,
             equipped_weapons: HashMap::new(),
+            pending: PendingChanges::new(),
         }
+    }
+
+    /// Returns the dirty/removed tracker for the DB layer.
+    #[inline]
+    pub fn pending(&self) -> &PendingChanges<WeaponInstId> {
+        &self.pending
+    }
+
+    /// Mutable access so the DB layer can `take_snapshot` for a flush.
+    #[inline]
+    pub fn pending_mut(&mut self) -> &mut PendingChanges<WeaponInstId> {
+        &mut self.pending
     }
 
     fn alloc_inst_id(&mut self) -> WeaponInstId {
@@ -239,9 +254,13 @@ impl WeaponDepot {
             inst_id, weapon.template_id
         );
         self.weapons.insert(inst_id, weapon);
+        self.pending.mark_dirty(inst_id);
         inst_id
     }
 
+    /// Loader-only insert: rebuilds the in-memory map from a DB row.
+    /// Deliberately does NOT touch `pending` - a freshly loaded weapon
+    /// is, by definition, already in sync with disk.
     pub fn insert_weapon(&mut self, weapon: WeaponInstance) {
         if weapon.is_equipped() {
             self.equipped_weapons
@@ -277,7 +296,9 @@ impl WeaponDepot {
                 "Cannot remove locked weapon".into(),
             ));
         }
-        Ok(self.weapons.remove(&inst_id).unwrap())
+        let removed = self.weapons.remove(&inst_id).unwrap();
+        self.pending.mark_removed(inst_id);
+        Ok(removed)
     }
 
     pub fn contains(&self, id: WeaponInstId) -> bool {
@@ -317,6 +338,10 @@ impl WeaponDepot {
         let w = self.weapons.get_mut(&weapon_inst_id).unwrap();
         w.equip_char_id = char_id;
         self.equipped_weapons.insert(char_id, weapon_inst_id);
+        self.pending.mark_dirty(weapon_inst_id);
+        if let Some(prev) = prev_weapon {
+            self.pending.mark_dirty(prev);
+        }
         info!(
             "Equipped weapon {} to char {} (prev: {:?})",
             weapon_inst_id, char_id, prev_weapon
@@ -335,6 +360,7 @@ impl WeaponDepot {
         let char_id = w.equip_char_id;
         w.equip_char_id = 0;
         self.equipped_weapons.remove(&char_id);
+        self.pending.mark_dirty(id);
         Ok(true)
     }
 
@@ -344,6 +370,7 @@ impl WeaponDepot {
                 w.equip_char_id = 0;
             }
             self.equipped_weapons.remove(&char_id);
+            self.pending.mark_dirty(inst_id);
             Some(inst_id)
         } else {
             None
@@ -367,12 +394,14 @@ impl WeaponDepot {
     pub fn set_lock(&mut self, id: WeaponInstId, is_lock: bool) -> Result<()> {
         self.get_mut_or_not_found(id, "Weapon not found")?
             .set_locked(is_lock);
+        self.pending.mark_dirty(id);
         Ok(())
     }
 
     pub fn clear_new_flag(&mut self, id: WeaponInstId) -> Result<()> {
         self.get_mut_or_not_found(id, "Weapon not found")?
             .mark_seen();
+        self.pending.mark_dirty(id);
         Ok(())
     }
 
@@ -456,6 +485,7 @@ impl WeaponDepot {
         }
         for &fid in fodder_inst_ids {
             self.weapons.remove(&fid);
+            self.pending.mark_removed(fid);
         }
 
         let max_level = assets
@@ -510,6 +540,7 @@ impl WeaponDepot {
         let t = self.weapons.get_mut(&target_inst_id).unwrap();
         t.weapon_lv = new_lv;
         t.exp = new_exp_relative;
+        self.pending.mark_dirty(target_inst_id);
         info!(
             "Weapon {} +{}exp from {} fodder, lv {}->{}",
             target_inst_id, total_exp, fodder_count, cur_lv, new_lv
@@ -577,6 +608,7 @@ impl WeaponDepot {
 
         let w = self.weapons.get_mut(&inst_id).unwrap();
         w.breakthrough_lv += 1;
+        self.pending.mark_dirty(inst_id);
         info!(
             "Weapon {} breakthrough: {}->{} (gold={}, mats={:?})",
             inst_id, cur, w.breakthrough_lv, gold_cost, material_costs
@@ -637,8 +669,10 @@ impl WeaponDepot {
             ));
         }
         self.weapons.remove(&fodder);
+        self.pending.mark_removed(fodder);
         let t = self.weapons.get_mut(&target).unwrap();
         t.refine_lv += 1;
+        self.pending.mark_dirty(target);
         info!(
             "Weapon {} refined: {}->{}",
             target,
@@ -668,6 +702,7 @@ impl WeaponDepot {
             None
         };
         w.attach_gem_id = gem_inst_id;
+        self.pending.mark_dirty(weapon_inst_id);
         Ok(prev)
     }
 
@@ -688,6 +723,7 @@ impl WeaponDepot {
         }
         let gem_id = w.attach_gem_id;
         w.attach_gem_id = 0;
+        self.pending.mark_dirty(weapon_inst_id);
         Ok(gem_id)
     }
 
@@ -772,6 +808,10 @@ impl WeaponDepot {
         for (char_id, _) in to_fix {
             self.equipped_weapons.remove(&char_id);
         }
+        // Validation runs right after load — it is a one-shot repair
+        // pass that must NOT mark anything dirty, otherwise the very
+        // first persist after login would re-sync the whole table.
+        self.pending.clear();
     }
 }
 
@@ -898,6 +938,9 @@ impl From<&GemInstance> for ScdItemGrid {
 pub struct GemDepot {
     gems: HashMap<GemInstId, GemInstance>,
     next_inst_id: u64,
+    /// Per-session dirty tracker; see [`WeaponDepot::pending`].
+    #[serde(skip)]
+    pending: PendingChanges<GemInstId>,
 }
 
 impl GemDepot {
@@ -907,7 +950,19 @@ impl GemDepot {
         Self {
             gems: HashMap::new(),
             next_inst_id: 1,
+            pending: PendingChanges::new(),
         }
+    }
+
+    /// Pending-changes accessor; see [`WeaponDepot::pending`].
+    #[inline]
+    pub fn pending(&self) -> &PendingChanges<GemInstId> {
+        &self.pending
+    }
+
+    #[inline]
+    pub fn pending_mut(&mut self) -> &mut PendingChanges<GemInstId> {
+        &mut self.pending
     }
 
     fn alloc_inst_id(&mut self) -> GemInstId {
@@ -937,9 +992,11 @@ impl GemDepot {
             inst_id, gem.template_id
         );
         self.gems.insert(inst_id, gem);
+        self.pending.mark_dirty(inst_id);
         inst_id
     }
 
+    /// Loader-only insert: does not touch `pending`.
     pub fn insert(&mut self, gem: GemInstance) {
         let v = gem.inst_id.as_u64();
         if v >= self.next_inst_id {
@@ -971,17 +1028,21 @@ impl GemDepot {
                 "Cannot remove locked gem".into(),
             ));
         }
-        Ok(self.gems.remove(&id).unwrap())
+        let removed = self.gems.remove(&id).unwrap();
+        self.pending.mark_removed(id);
+        Ok(removed)
     }
 
     pub fn set_lock(&mut self, id: GemInstId, lock: bool) -> Result<()> {
         self.get_mut_or_not_found(id, "Gem not found")?
             .set_locked(lock);
+        self.pending.mark_dirty(id);
         Ok(())
     }
 
     pub fn clear_new_flag(&mut self, id: GemInstId) -> Result<()> {
         self.get_mut_or_not_found(id, "Gem not found")?.mark_seen();
+        self.pending.mark_dirty(id);
         Ok(())
     }
 
@@ -991,12 +1052,14 @@ impl GemDepot {
         // directly, but the lookup goes through KeyedContainerExt.
         self.get_mut_or_not_found(id, "Gem not found")?
             .attach_weapon_id = weapon_id;
+        self.pending.mark_dirty(id);
         Ok(())
     }
 
     pub(crate) fn clear_socket(&mut self, id: GemInstId) -> Result<()> {
         self.get_mut_or_not_found(id, "Gem not found")?
             .attach_weapon_id = 0;
+        self.pending.mark_dirty(id);
         Ok(())
     }
 
@@ -1091,6 +1154,9 @@ pub struct EquipDepot {
     pieces: HashMap<EquipInstId, EquipInstance>,
     next_inst_id: u64,
     equipped_by_char: HashMap<u64, HashMap<CraftShowingType, EquipInstId>>,
+    /// Per-session dirty tracker; see [`WeaponDepot::pending`].
+    #[serde(skip)]
+    pending: PendingChanges<EquipInstId>,
 }
 
 impl EquipDepot {
@@ -1101,7 +1167,19 @@ impl EquipDepot {
             pieces: HashMap::new(),
             next_inst_id: 1,
             equipped_by_char: HashMap::new(),
+            pending: PendingChanges::new(),
         }
+    }
+
+    /// Pending-changes accessor; see [`WeaponDepot::pending`].
+    #[inline]
+    pub fn pending(&self) -> &PendingChanges<EquipInstId> {
+        &self.pending
+    }
+
+    #[inline]
+    pub fn pending_mut(&mut self) -> &mut PendingChanges<EquipInstId> {
+        &mut self.pending
     }
 
     fn alloc_inst_id(&mut self) -> EquipInstId {
@@ -1132,9 +1210,11 @@ impl EquipDepot {
             inst_id, piece.template_id, piece.slot
         );
         self.pieces.insert(inst_id, piece);
+        self.pending.mark_dirty(inst_id);
         inst_id
     }
 
+    /// Loader-only insert: does not touch `pending`.
     pub fn insert(&mut self, piece: EquipInstance) {
         if piece.is_equipped() {
             self.equipped_by_char
@@ -1200,6 +1280,10 @@ impl EquipDepot {
             .entry(char_id)
             .or_default()
             .insert(slot, piece_inst_id);
+        self.pending.mark_dirty(piece_inst_id);
+        if let Some(prev_id) = prev {
+            self.pending.mark_dirty(prev_id);
+        }
 
         Ok((prev, prev_owner))
     }
@@ -1218,6 +1302,7 @@ impl EquipDepot {
         if let Some(slots) = self.equipped_by_char.get_mut(&char_id) {
             slots.remove(&slot);
         }
+        self.pending.mark_dirty(id);
         Ok(true)
     }
 
@@ -1236,18 +1321,22 @@ impl EquipDepot {
                 "Cannot remove locked piece".into(),
             ));
         }
-        Ok(self.pieces.remove(&id).unwrap())
+        let removed = self.pieces.remove(&id).unwrap();
+        self.pending.mark_removed(id);
+        Ok(removed)
     }
 
     pub fn set_lock(&mut self, id: EquipInstId, lock: bool) -> Result<()> {
         self.get_mut_or_not_found(id, "Equip piece not found")?
             .set_locked(lock);
+        self.pending.mark_dirty(id);
         Ok(())
     }
 
     pub fn clear_new_flag(&mut self, id: EquipInstId) -> Result<()> {
         self.get_mut_or_not_found(id, "Equip piece not found")?
             .mark_seen();
+        self.pending.mark_dirty(id);
         Ok(())
     }
 
@@ -1312,6 +1401,10 @@ impl From<&EquipDepot> for ScdItemDepot {
 pub struct StackableDepot {
     counts: HashMap<String, u32>,
     depot_type: i32,
+    /// Per-session dirty tracker; see [`WeaponDepot::pending`].
+    /// Keyed by `template_id` (the natural row key for stackables).
+    #[serde(skip)]
+    pending: PendingChanges<String>,
 }
 
 impl StackableDepot {
@@ -1319,17 +1412,31 @@ impl StackableDepot {
         Self {
             counts: HashMap::new(),
             depot_type,
+            pending: PendingChanges::new(),
         }
+    }
+
+    /// Pending-changes accessor; see [`WeaponDepot::pending`].
+    #[inline]
+    pub fn pending(&self) -> &PendingChanges<String> {
+        &self.pending
+    }
+
+    #[inline]
+    pub fn pending_mut(&mut self) -> &mut PendingChanges<String> {
+        &mut self.pending
     }
 
     pub fn add(&mut self, template_id: &str, count: u32) -> u32 {
         let e = self.counts.entry(template_id.to_owned()).or_insert(0);
         *e = e.saturating_add(count);
+        let new_val = *e;
         debug!(
             "StackableDepot({}): +{} {} -> {}",
-            self.depot_type, count, template_id, e
+            self.depot_type, count, template_id, new_val
         );
-        *e
+        self.pending.mark_dirty(template_id.to_owned());
+        new_val
     }
 
     pub fn consume(&mut self, template_id: &str, count: u32) -> Result<u32> {
@@ -1344,8 +1451,10 @@ impl StackableDepot {
         let rem = cur - count;
         if rem == 0 {
             self.counts.remove(template_id);
+            self.pending.mark_removed(template_id.to_owned());
         } else {
             *self.counts.get_mut(template_id).unwrap() = rem;
+            self.pending.mark_dirty(template_id.to_owned());
         }
         Ok(rem)
     }
@@ -1366,6 +1475,20 @@ impl StackableDepot {
     }
 
     pub fn set(&mut self, id: &str, count: u32) {
+        if count == 0 {
+            if self.counts.remove(id).is_some() {
+                self.pending.mark_removed(id.to_owned());
+            }
+        } else {
+            *self.counts.entry(id.to_owned()).or_insert(0) = count;
+            self.pending.mark_dirty(id.to_owned());
+        }
+    }
+
+    /// Loader-only variant of [`set`]: writes the count into the map
+    /// without touching `pending`. Used by `subsystems::char_bag::load`
+    /// so that a freshly loaded depot starts out fully in-sync.
+    pub fn set_loaded(&mut self, id: &str, count: u32) {
         if count == 0 {
             self.counts.remove(id);
         } else {

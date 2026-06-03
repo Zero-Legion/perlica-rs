@@ -80,7 +80,10 @@ pub async fn on_cs_update_quest_objective(
     }
 
     if let Err(e) = ctx.player.missions.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist missions after quest objective update: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist missions after quest objective update: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     update.reply_objective_update.unwrap_or_default()
@@ -101,7 +104,10 @@ pub async fn on_cs_complete_guide_group(
     notify_activated_scripts(ctx, activated).await;
 
     if let Err(e) = ctx.player.guides.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist guides after complete guide group: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist guides after complete guide group: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScCompleteGuideGroup {
@@ -117,7 +123,10 @@ pub async fn on_cs_complete_guide_group_key_step(
         .guides
         .mark_key_step_completed(&req.guide_group_id);
     if let Err(e) = ctx.player.guides.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist guides after complete guide key step: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist guides after complete guide key step: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScCompleteGuideGroupKeyStep {
@@ -131,7 +140,10 @@ pub async fn on_cs_track_mission(
 ) -> ScTrackMissionChange {
     ctx.player.missions.update_track_mission(&req.mission_id);
     if let Err(e) = ctx.player.missions.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist missions after track mission: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist missions after track mission: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScTrackMissionChange {
@@ -145,7 +157,10 @@ pub async fn on_cs_stop_tracking_mission(
 ) -> ScTrackMissionChange {
     ctx.player.missions.stop_tracking();
     if let Err(e) = ctx.player.missions.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist missions after stop tracking: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist missions after stop tracking: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScTrackMissionChange {

@@ -33,7 +33,10 @@ pub async fn on_cs_bitset_add(ctx: &mut NetContext<'_>, req: CsBitsetAdd) -> ScB
     );
 
     if let Err(e) = ctx.player.bitsets.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist bitsets after add: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist bitsets after add: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScBitsetAdd {
@@ -68,7 +71,10 @@ pub async fn on_cs_bitset_remove(ctx: &mut NetContext<'_>, req: CsBitsetRemove) 
     );
 
     if let Err(e) = ctx.player.bitsets.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist bitsets after remove: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist bitsets after remove: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScBitsetRemove {

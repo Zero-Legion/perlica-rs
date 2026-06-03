@@ -259,6 +259,55 @@ impl Persistable for CharBag {
     }
 }
 
+impl PlayerDb {
+    /// Preferred persistence entry point for `CharBag`.
+    ///
+    /// Uses the per-depot `PendingChanges` trackers to only re-upsert
+    /// the rows that actually changed since the last successful
+    /// commit. Returns immediately if nothing is dirty.
+    ///
+    /// On success, every tracker on `bag` is cleared. On failure the
+    /// trackers are left intact so the next call retries the same
+    /// rows.
+    pub async fn persist_char_bag_incremental(&self, uid: &str, bag: &mut CharBag) -> Result<()> {
+        if !bag.has_pending_changes() {
+            return Ok(());
+        }
+
+        let n_chars = bag.pending_chars().dirty_count();
+        let n_teams = bag.pending_teams().dirty_count();
+        let n_weapons = bag.item_manager.weapons.pending().dirty_count();
+        let n_gems = bag.item_manager.gems.pending().dirty_count();
+        let n_equips = bag.item_manager.equips.pending().dirty_count();
+        let n_special = bag.item_manager.special_items.pending().dirty_count();
+        let n_mission = bag.item_manager.mission_items.pending().dirty_count();
+        let n_factory = bag.item_manager.factory_items.pending().dirty_count();
+
+        let mut tx = self.pool.begin().await?;
+        PlayerDb::ensure_player_row(&mut tx, uid).await?;
+
+        // `beyond_players` is a single-row UPDATE; cheap and we update
+        // it whenever any depot allocated a new inst id (which always
+        // means at least one weapon/gem/equip was marked dirty).
+        let needs_scalar_update =
+            bag.is_meta_dirty() || n_weapons > 0 || n_gems > 0 || n_equips > 0;
+        if needs_scalar_update {
+            player_root::update_char_bag_scalars(&mut tx, uid, bag).await?;
+        }
+
+        char_bag::write_incremental(&mut tx, uid, bag).await?;
+        tx.commit().await?;
+
+        debug!(
+            "Incremental char_bag flush for uid={}: chars={}, teams={}, weapons={}, gems={}, equips={}, stackables=({}+{}+{})",
+            uid, n_chars, n_teams, n_weapons, n_gems, n_equips, n_special, n_mission, n_factory
+        );
+
+        bag.clear_all_pending();
+        Ok(())
+    }
+}
+
 impl Persistable for BitsetManager {
     async fn persist(&self, uid: &str, db: &PlayerDb) -> Result<()> {
         let mut tx = db.pool.begin().await?;

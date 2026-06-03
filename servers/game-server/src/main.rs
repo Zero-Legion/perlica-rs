@@ -41,18 +41,31 @@ async fn main() -> Result<(), error::ServerError> {
     info!("Listening {}", listener.local_addr()?);
 
     loop {
-        match listener.accept().await {
-            Ok((socket, addr)) => {
-                info!("Connected {}", addr);
-                tokio::spawn(async move {
-                    if let Err(e) = net::handle_connection(socket, assets, registry, db).await {
-                        error!("Connection Error {}, {}", addr, e);
+        tokio::select! {
+            result = listener.accept() => {
+                match result {
+                    Ok((socket, addr)) => {
+                        info!("Connected {}", addr);
+                        tokio::spawn(async move {
+                            if let Err(e) = net::handle_connection(socket, assets, registry, db).await {
+                                error!("Connection Error {}, {}", addr, e);
+                            }
+                        });
                     }
-                });
+                    Err(e) => {
+                        warn!("Accept Failed: {}", e);
+                    }
+                }
             }
-            Err(e) => {
-                warn!("Accept Failed: {}", e);
+            _ = tokio::signal::ctrl_c() => {
+                info!("Shutting down...");
+                break;
             }
         }
     }
+
+    db.pool().close().await;
+    info!("Database saved. Goodbye.");
+
+    Ok(())
 }

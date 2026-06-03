@@ -1,7 +1,6 @@
 //! Character skill handlers: equip normal skill, level a skill up, set team skill.
 
 use crate::net::NetContext;
-use perlica_db::Persistable;
 use perlica_proto::{
     CsCharSetNormalSkill, CsCharSetTeamSkill, CsCharSkillLevelUp, ScCharSetNormalSkill,
     ScCharSetTeamSkill, ScCharSkillLevelUp, SkillLevelInfo,
@@ -18,7 +17,11 @@ pub async fn on_cs_char_set_normal_skill(
             .entry(req.normal_skillid.clone())
             .or_insert(1);
     }
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
         warn!(
             "Failed to persist char_bag after set normal skill: uid={}, error={}",
             ctx.player.uid, e
@@ -61,7 +64,11 @@ pub async fn on_cs_char_skill_level_up(
         "SkillLevelUp: uid={}, char_id={}, skill={}, lv={}",
         ctx.player.uid, req.objid, req.skill_id, new_level
     );
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
         warn!(
             "Failed to persist char_bag after skill level up: uid={}, error={}",
             ctx.player.uid, e
@@ -88,7 +95,11 @@ pub async fn on_cs_char_set_team_skill(
             .entry(req.normal_skillid.clone())
             .or_insert(1);
     }
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
         warn!(
             "Failed to persist char_bag after set team skill: uid={}, error={}",
             ctx.player.uid, e

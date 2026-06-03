@@ -2,7 +2,6 @@
 //! break / ascension (`on_cs_char_break`).
 
 use crate::net::NetContext;
-use perlica_db::Persistable;
 use perlica_logic::item::ConsumedItems;
 use perlica_proto::{
     CsCharBreak, CsCharLevelUp, ScCharBreak, ScCharLevelUp, ScCharSyncLevelExp, ScItemBagSyncModify,
@@ -212,8 +211,15 @@ pub async fn on_cs_char_level_up(ctx: &mut NetContext<'_>, req: CsCharLevelUp) -
         }
     }
 
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist char_bag after level up: uid={}, error={}", ctx.player.uid, e);
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
+        warn!(
+            "Failed to persist char_bag after level up: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScCharLevelUp {
@@ -268,8 +274,15 @@ pub async fn on_cs_char_break(ctx: &mut NetContext<'_>, req: CsCharBreak) -> ScC
     {
         let _ = ctx.notify(attr_msg).await;
     }
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist char_bag after break: uid={}, error={}", ctx.player.uid, e);
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
+        warn!(
+            "Failed to persist char_bag after break: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScCharBreak {

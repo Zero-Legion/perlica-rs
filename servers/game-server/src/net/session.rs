@@ -12,12 +12,16 @@ use perlica_db::{Persistable, PlayerDb};
 use perlica_logic::traits::SyncWriteBack;
 use perlica_muip::GmResponse;
 use perlica_proto::{CsHead, prost::Message};
+use std::time::Duration;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc,
+    time::{Instant, MissedTickBehavior, interval_at},
 };
 use tracing::{debug, error, info, warn};
+
+const PERSIST_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct SessionContext {
     pub assets: &'static BeyondAssets,
@@ -80,6 +84,9 @@ async fn logic_loop(
 
     info!("Session started");
 
+    let mut persist_timer = interval_at(Instant::now() + PERSIST_INTERVAL, PERSIST_INTERVAL);
+    persist_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
     let result = loop {
         tokio::select! {
             result = read_packet(&mut reader) => {
@@ -124,6 +131,21 @@ async fn logic_loop(
                     break Ok(());
                 }
             }
+
+            _ = persist_timer.tick() => {
+                if registered && player.char_bag.has_pending_changes() {
+                    if let Err(e) = ctx
+                        .db
+                        .persist_char_bag_incremental(&player.uid, &mut player.char_bag)
+                        .await
+                    {
+                        warn!(
+                            "Periodic char_bag flush failed: UID={}, Error={e}",
+                            player.uid
+                        );
+                    }
+                }
+            }
         }
     };
 
@@ -131,7 +153,21 @@ async fn logic_loop(
         player.movement.write_back_into(&mut player.world);
 
         if let Err(e) = player.world.persist(&player.uid, ctx.db).await {
-            error!("World persist failed on disconnect: UID={}, Error={e}", player.uid);
+            error!(
+                "World persist failed on disconnect: UID={}, Error={e}",
+                player.uid
+            );
+        }
+
+        if let Err(e) = ctx
+            .db
+            .persist_char_bag_incremental(&player.uid, &mut player.char_bag)
+            .await
+        {
+            error!(
+                "CharBag final flush failed on disconnect: UID={}, Error={e}",
+                player.uid
+            );
         }
 
         ctx.registry.unregister(&player.uid);

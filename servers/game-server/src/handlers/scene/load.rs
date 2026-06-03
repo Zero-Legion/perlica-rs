@@ -74,7 +74,10 @@ pub async fn on_scene_load_finish(
     }
 
     if let Err(e) = ctx.player.world.persist(&ctx.player.uid, ctx.db).await {
-        error!("Failed to persist world after scene load finish: uid={}, error={}", ctx.player.uid, e);
+        error!(
+            "Failed to persist world after scene load finish: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     self_info

@@ -29,7 +29,6 @@ pub async fn on_cs_scene_kill_monster(ctx: &mut NetContext<'_>, req: CsSceneKill
     }
 }
 
-/// Marks a character dead and destroys the scene entity. The `CharBag` entry is preserved for revival.
 pub async fn on_cs_scene_kill_char(ctx: &mut NetContext<'_>, req: CsSceneKillChar) {
     debug!("Character killed: {}", req.id);
 
@@ -45,13 +44,7 @@ pub async fn on_cs_scene_kill_char(ctx: &mut NetContext<'_>, req: CsSceneKillCha
     if let Err(error) = ctx.notify(msg).await {
         error!("Failed to send character kill notification: {:?}", error);
     }
-
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-        warn!(
-            "Failed to persist char_bag after char kill: uid={}, error={}",
-            ctx.player.uid, e
-        );
-    }
+    // no `.persist()` here - the dirty flag is enough.
 }
 
 /// Handles `CsSceneRevival`, revives all dead characters in the current team
@@ -86,7 +79,11 @@ pub async fn on_cs_scene_revival(
         error!("Failed to send revival notification: {:?}", error);
     }
 
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
         warn!(
             "Failed to persist char_bag after revival: uid={}, error={}",
             ctx.player.uid, e

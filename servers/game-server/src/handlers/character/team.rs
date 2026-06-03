@@ -1,7 +1,6 @@
 //! Team composition handlers: set leader, switch active team, set members, rename.
 
 use crate::net::NetContext;
-use perlica_db::Persistable;
 use perlica_logic::character::char_bag::{CharIndex, Team, TeamSlot};
 use perlica_proto::{
     CsCharBagSetCurrTeamIndex, CsCharBagSetTeam, CsCharBagSetTeamLeader, CsCharBagSetTeamName,
@@ -18,6 +17,7 @@ pub async fn on_cs_char_bag_set_team_leader(
         req.team_index, req.leaderid
     );
     let team_idx = req.team_index as usize;
+    let mut changed = false;
     if let Some(team) = ctx.player.char_bag.teams.get_mut(team_idx) {
         let in_team = team.char_team.iter().any(|s| {
             s.char_index()
@@ -26,6 +26,7 @@ pub async fn on_cs_char_bag_set_team_leader(
         });
         if in_team {
             team.leader_index = CharIndex::from_object_id(req.leaderid);
+            changed = true;
         } else {
             warn!(
                 "Rejected team leader update: leader_id={} not in team",
@@ -33,8 +34,18 @@ pub async fn on_cs_char_bag_set_team_leader(
             );
         }
     }
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist char_bag after set team leader: uid={}, error={}", ctx.player.uid, e);
+    if changed {
+        ctx.player.char_bag.mark_team_dirty(team_idx);
+    }
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
+        warn!(
+            "Failed to persist char_bag after set team leader: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScCharBagSetTeamLeader {
@@ -68,6 +79,8 @@ pub async fn on_cs_char_bag_set_curr_team_index(
         .filter_map(|s| s.object_id())
         .collect();
     ctx.player.char_bag.meta.curr_team_index = new as u32;
+    // curr_team_index lives on the `beyond_players` scalar row.
+    ctx.player.char_bag.mark_meta_dirty();
     if let Err(e) = ctx
         .send(ScCharBagSetCurrTeamIndex {
             team_index: req.team_index,
@@ -92,8 +105,15 @@ pub async fn on_cs_char_bag_set_curr_team_index(
     let _ = ctx.notify(self_info).await;
     crate::handlers::char_bag::push_char_status_for_ids(ctx, &new_ids).await;
 
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist char_bag after set curr team index: uid={}, error={}", ctx.player.uid, e);
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
+        warn!(
+            "Failed to persist char_bag after set curr team index: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 }
 
@@ -141,6 +161,7 @@ pub async fn on_cs_char_bag_set_team(ctx: &mut NetContext<'_>, req: CsCharBagSet
                 .unwrap_or_default();
         }
     }
+    ctx.player.char_bag.mark_team_dirty(team_index);
 
     if let Err(e) = ctx
         .send(ScCharBagSetTeam {
@@ -178,8 +199,15 @@ pub async fn on_cs_char_bag_set_team(ctx: &mut NetContext<'_>, req: CsCharBagSet
         let _ = ctx.notify(self_info).await;
     }
 
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist char_bag after set team: uid={}, error={}", ctx.player.uid, e);
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
+        warn!(
+            "Failed to persist char_bag after set team: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 }
 
@@ -196,8 +224,16 @@ pub async fn on_cs_char_bag_set_team_name(
             team_name: String::new(),
         };
     }
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist char_bag after set team name: uid={}, error={}", ctx.player.uid, e);
+    ctx.player.char_bag.mark_team_dirty(team_index);
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
+        warn!(
+            "Failed to persist char_bag after set team name: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     ScCharBagSetTeamName {

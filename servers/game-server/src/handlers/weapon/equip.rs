@@ -1,5 +1,4 @@
 use crate::net::NetContext;
-use perlica_db::Persistable;
 use perlica_logic::character::char_bag::handle_weapon_puton;
 use perlica_proto::{CsWeaponPuton, ScWeaponPuton};
 use tracing::{debug, error, warn};
@@ -22,7 +21,11 @@ pub async fn on_cs_weapon_puton(ctx: &mut NetContext<'_>, req: CsWeaponPuton) ->
     }
 
     if response.is_ok() {
-        if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+        if let Err(e) = ctx
+            .db
+            .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+            .await
+        {
             warn!(
                 "Failed to persist char_bag after weapon puton: uid={}, error={}",
                 ctx.player.uid, e

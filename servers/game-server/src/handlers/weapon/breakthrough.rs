@@ -1,5 +1,4 @@
 use crate::net::NetContext;
-use perlica_db::Persistable;
 use perlica_logic::character::char_bag::handle_weapon_breakthrough;
 use perlica_logic::item::WALLET_GOLD_AMOUNT;
 use perlica_proto::{
@@ -55,7 +54,11 @@ pub async fn on_cs_weapon_breakthrough(
                 ctx.player.uid, req.weaponid, result.response.breakthrough_lv, result.gold_cost
             );
 
-            if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+            if let Err(e) = ctx
+                .db
+                .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+                .await
+            {
                 warn!(
                     "Failed to persist char_bag after weapon breakthrough: uid={}, error={}",
                     ctx.player.uid, e

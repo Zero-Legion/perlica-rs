@@ -89,7 +89,10 @@ pub async fn on_cs_scene_teleport(
     );
 
     if let Err(e) = ctx.player.world.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist world after teleport: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist world after teleport: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     result

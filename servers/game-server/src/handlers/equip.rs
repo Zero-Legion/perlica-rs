@@ -1,6 +1,5 @@
 use crate::net::NetContext;
 use config::item::{CraftShowingType, ItemDepotType};
-use perlica_db::Persistable;
 use perlica_logic::item::{EquipInstId, GemInstId, WeaponInstId};
 use perlica_proto::{
     CsEquipPutoff, CsEquipPuton, CsRemoveItemNewTags, ScEquipPutoff, ScEquipPuton,
@@ -129,7 +128,11 @@ pub async fn on_cs_equip_puton(ctx: &mut NetContext<'_>, req: CsEquipPuton) -> S
         }
     };
 
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
         warn!(
             "Failed to persist char_bag after equip puton: uid={}, error={}",
             ctx.player.uid, e
@@ -186,7 +189,11 @@ pub async fn on_cs_equip_putoff(ctx: &mut NetContext<'_>, req: CsEquipPutoff) ->
         .equips
         .compute_suitinfo(req.charid, ctx.assets);
 
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
         warn!(
             "Failed to persist char_bag after equip putoff: uid={}, error={}",
             ctx.player.uid, e
@@ -258,7 +265,11 @@ pub async fn on_cs_remove_item_new_tags(
         }
     }
 
-    if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
+    if let Err(e) = ctx
+        .db
+        .persist_char_bag_incremental(&ctx.player.uid, &mut ctx.player.char_bag)
+        .await
+    {
         warn!(
             "Failed to persist char_bag after remove item new tags: uid={}, error={}",
             ctx.player.uid, e

@@ -118,7 +118,10 @@ async fn heal_command(ctx: &mut NetContext<'_>, args: &[&str]) -> Result<GmOutco
     }
 
     if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist char_bag after GM heal: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist char_bag after GM heal: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     GmOutcome::ok(format!(
@@ -158,7 +161,10 @@ async fn set_level_command(ctx: &mut NetContext<'_>, args: &[&str]) -> Result<Gm
     .map_err(|e| format!("failed to sync player level: {e}"))?;
 
     if let Err(e) = ctx.player.world.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist world after GM set level: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist world after GM set level: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     GmOutcome::ok(format!("set live player level to {level}"))
@@ -252,7 +258,10 @@ async fn teleport_command(ctx: &mut NetContext<'_>, args: &[&str]) -> Result<GmO
         .map_err(|e| format!("failed to send teleport packet: {e}"))?;
 
     if let Err(e) = ctx.player.world.persist(&ctx.player.uid, ctx.db).await {
-        warn!("Failed to persist world after GM teleport: uid={}, error={}", ctx.player.uid, e);
+        warn!(
+            "Failed to persist world after GM teleport: uid={}, error={}",
+            ctx.player.uid, e
+        );
     }
 
     GmOutcome::ok(format!(
@@ -357,7 +366,10 @@ async fn give_command(ctx: &mut NetContext<'_>, args: &[&str]) -> Result<GmOutco
             }
 
             if let Err(e) = ctx.player.char_bag.persist(&ctx.player.uid, ctx.db).await {
-                warn!("Failed to persist char_bag after GM give weapon: uid={}, error={}", ctx.player.uid, e);
+                warn!(
+                    "Failed to persist char_bag after GM give weapon: uid={}, error={}",
+                    ctx.player.uid, e
+                );
             }
 
             GmOutcome::ok(format!(

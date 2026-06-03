@@ -2,7 +2,7 @@ use crate::error::{LogicError, Result};
 use crate::item::{
     ConsumedItems, ItemManager, WeaponAttachGemArgs, WeaponDetachGemArgs, WeaponPutonArgs,
 };
-use crate::traits::KeyedContainerExt;
+use crate::traits::{KeyedContainerExt, PendingChanges};
 use common::time::now_ms;
 use config::BeyondAssets;
 use perlica_proto::{
@@ -93,6 +93,12 @@ pub struct CharBag {
     pub chars: Vec<Char>,
     pub meta: Meta,
     pub item_manager: ItemManager,
+    #[serde(skip)]
+    pending_chars: PendingChanges<usize>,
+    #[serde(skip)]
+    pending_teams: PendingChanges<usize>,
+    #[serde(skip)]
+    meta_dirty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -234,15 +240,18 @@ impl CharBag {
         }
         team.leader_index = leader.unwrap_or_default();
         bag.teams.push(team);
+        bag.pending_teams.mark_dirty(0);
         // Add 4 empty placeholder teams so the client's squadManager has squads for all indexes (otherwise it will crash)
         for i in 1..5 {
             bag.teams.push(Team {
                 name: format!("Team {}", i + 1),
                 ..Default::default()
             });
+            bag.pending_teams.mark_dirty(i);
         }
 
         bag.meta.curr_team_index = 0;
+        bag.meta_dirty = true;
         info!("Default team created with leader: {:?}", leader);
         Ok(bag)
     }
@@ -250,7 +259,108 @@ impl CharBag {
     pub fn add_char(&mut self, char: Char) -> CharIndex {
         let idx = CharIndex::from_usize(self.chars.len());
         self.chars.push(char);
+        self.pending_chars.mark_dirty(idx.as_usize());
         idx
+    }
+
+    /// Mark the `chars[idx]` row as needing a re-upsert. Cheap (a
+    /// `HashSet` insert); safe to call from any mutator that touches a
+    /// char field, including the `is_dead`/`hp`/`ultimate_sp` battle
+    /// updates that fire on every hit during combat.
+    #[inline]
+    pub fn mark_char_dirty(&mut self, idx: CharIndex) {
+        self.pending_chars.mark_dirty(idx.as_usize());
+    }
+
+    /// Same as [`mark_char_dirty`] but takes the wire-protocol object id
+    /// (1-based). Useful at the network boundary where ids are received
+    /// in object-id form.
+    #[inline]
+    pub fn mark_char_dirty_by_objid(&mut self, objid: u64) {
+        if objid == 0 {
+            return;
+        }
+        let idx = CharIndex::from_object_id(objid);
+        if idx.as_usize() < self.chars.len() {
+            self.pending_chars.mark_dirty(idx.as_usize());
+        }
+    }
+
+    /// Mark `teams[idx]` (and all its slots) as dirty.
+    #[inline]
+    pub fn mark_team_dirty(&mut self, idx: usize) {
+        self.pending_teams.mark_dirty(idx);
+    }
+
+    /// Mark the `beyond_players` scalar row as dirty. Call after
+    /// mutating `meta.curr_team_index` or after a flow that bumps any
+    /// depot's `next_inst_id`.
+    #[inline]
+    pub fn mark_meta_dirty(&mut self) {
+        self.meta_dirty = true;
+    }
+
+    /// Read-only access used by the DB layer.
+    #[inline]
+    pub fn pending_chars(&self) -> &PendingChanges<usize> {
+        &self.pending_chars
+    }
+
+    #[inline]
+    pub fn pending_chars_mut(&mut self) -> &mut PendingChanges<usize> {
+        &mut self.pending_chars
+    }
+
+    #[inline]
+    pub fn pending_teams(&self) -> &PendingChanges<usize> {
+        &self.pending_teams
+    }
+
+    #[inline]
+    pub fn pending_teams_mut(&mut self) -> &mut PendingChanges<usize> {
+        &mut self.pending_teams
+    }
+
+    #[inline]
+    pub fn is_meta_dirty(&self) -> bool {
+        self.meta_dirty
+    }
+
+    #[inline]
+    pub fn clear_meta_dirty(&mut self) {
+        self.meta_dirty = false;
+    }
+
+    /// Aggregate `has_changes` across every tracker the char-bag owns.
+    /// Used by [`crate::traits::PendingChanges`]-aware persisters to
+    /// short-circuit a flush when nothing has changed (the hot path).
+    pub fn has_pending_changes(&self) -> bool {
+        if self.meta_dirty || self.pending_chars.has_changes() || self.pending_teams.has_changes() {
+            return true;
+        }
+        let im = &self.item_manager;
+        im.weapons.pending().has_changes()
+            || im.gems.pending().has_changes()
+            || im.equips.pending().has_changes()
+            || im.special_items.pending().has_changes()
+            || im.mission_items.pending().has_changes()
+            || im.factory_items.pending().has_changes()
+    }
+
+    /// Clear every dirty/removed set the char-bag owns. Used after a
+    /// successful full save (the `PlayerDb::save` path) to declare the
+    /// in-memory state in sync with disk.
+    pub fn clear_all_pending(&mut self) {
+        self.pending_chars.clear();
+        self.pending_teams.clear();
+        self.meta_dirty = false;
+        let im = &mut self.item_manager;
+        im.weapons.pending_mut().clear();
+        im.gems.pending_mut().clear();
+        im.equips.pending_mut().clear();
+        im.special_items.pending_mut().clear();
+        im.mission_items.pending_mut().clear();
+        im.factory_items.pending_mut().clear();
     }
 
     pub fn get_char(&self, idx: CharIndex) -> Option<&Char> {
@@ -258,6 +368,14 @@ impl CharBag {
     }
 
     pub fn get_char_mut(&mut self, idx: CharIndex) -> Option<&mut Char> {
+        // We can't know what the caller is about to mutate, so be
+        // conservative and mark this char dirty whenever a mutable
+        // reference is handed out. This is the same trade-off Hibernate
+        // makes for entity proxies and avoids "oops I forgot to mark it
+        // dirty" bugs in every call site.
+        if idx.as_usize() < self.chars.len() {
+            self.pending_chars.mark_dirty(idx.as_usize());
+        }
         self.chars.get_mut(idx.as_usize())
     }
 
@@ -273,11 +391,15 @@ impl CharBag {
     }
 
     pub fn get_char_by_objid_mut(&mut self, objid: u64) -> Option<&mut Char> {
-        self.chars
-            .get_mut(CharIndex::from_object_id(objid).as_usize())
+        let idx = CharIndex::from_object_id(objid);
+        if idx.as_usize() < self.chars.len() {
+            self.pending_chars.mark_dirty(idx.as_usize());
+        }
+        self.chars.get_mut(idx.as_usize())
     }
 
     pub fn update_battle_info(&mut self, objid: u64, hp: f64, sp: f32) {
+        // `get_char_by_objid_mut` already marks the row dirty.
         if let Some(char) = self.get_char_by_objid_mut(objid) {
             char.hp = hp;
             char.ultimate_sp = sp;
@@ -563,6 +685,11 @@ impl CharBag {
                 );
             }
         }
+
+        // We just rebuilt the bag from the on-disk row. Everything is,
+        // by definition, in sync - wipe any dirty marks accidentally
+        // set by the loader path.
+        self.clear_all_pending();
 
         info!(
             "CharBag validation complete: {} chars, {} weapons",

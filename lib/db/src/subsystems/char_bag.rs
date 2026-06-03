@@ -282,9 +282,18 @@ pub(crate) async fn load(pool: &SqlitePool, uid: &str) -> Result<CharBag> {
         let count: i64 = r.try_get("count")?;
         let count_u = count as u32;
         match depot_type {
-            DEPOT_SPECIAL => bag.item_manager.special_items.set(&template_id, count_u),
-            DEPOT_MISSION => bag.item_manager.mission_items.set(&template_id, count_u),
-            DEPOT_FACTORY => bag.item_manager.factory_items.set(&template_id, count_u),
+            DEPOT_SPECIAL => bag
+                .item_manager
+                .special_items
+                .set_loaded(&template_id, count_u),
+            DEPOT_MISSION => bag
+                .item_manager
+                .mission_items
+                .set_loaded(&template_id, count_u),
+            DEPOT_FACTORY => bag
+                .item_manager
+                .factory_items
+                .set_loaded(&template_id, count_u),
             other => {
                 return Err(DbError::Corruption {
                     uid: uid.to_string(),
@@ -298,7 +307,11 @@ pub(crate) async fn load(pool: &SqlitePool, uid: &str) -> Result<CharBag> {
     Ok(bag)
 }
 
-/// Incrementally sync every char-bag table to match `bag`.
+/// Full sync: write every row in `bag` to disk and prune anything
+/// that's no longer there. O(N) in the size of the bag - only used
+/// for the first save of a brand-new player, the explicit
+/// `PlayerDb::save` shutdown flow, and the GM "force full save" path.
+/// The hot game-loop path uses [`write_incremental`] instead.
 pub(crate) async fn write(
     tx: &mut Transaction<'_, Sqlite>,
     uid: &str,
@@ -310,6 +323,30 @@ pub(crate) async fn write(
     write_gems(tx, uid, bag).await?;
     write_equips(tx, uid, bag).await?;
     write_stackables(tx, uid, bag).await?;
+    Ok(())
+}
+
+/// Incremental sync: only touch the rows that the in-memory dirty
+/// trackers point at. The number of SQL round-trips is
+/// `O(actually-modified rows)` rather than `O(total bag size)`.
+///
+/// Caller responsibilities:
+///   1. Call inside a `Transaction`.
+///   2. On `Ok(())`, clear every tracker on `bag` so the next call is
+///      a no-op until something changes again.
+///   3. On `Err(_)`, do NOT clear the trackers - the same rows will be
+///      retried next flush.
+pub(crate) async fn write_incremental(
+    tx: &mut Transaction<'_, Sqlite>,
+    uid: &str,
+    bag: &CharBag,
+) -> Result<()> {
+    write_chars_incremental(tx, uid, bag).await?;
+    write_teams_incremental(tx, uid, bag).await?;
+    write_weapons_incremental(tx, uid, bag).await?;
+    write_gems_incremental(tx, uid, bag).await?;
+    write_equips_incremental(tx, uid, bag).await?;
+    write_stackables_incremental(tx, uid, bag).await?;
     Ok(())
 }
 
@@ -680,6 +717,408 @@ async fn prune_stackable_depot(
         let mut q = sqlx::query(&sql).bind(uid).bind(depot_type);
         for (tid, _) in chunk {
             q = q.bind(*tid);
+        }
+        q.execute(&mut **tx).await?;
+    }
+    Ok(())
+}
+
+async fn write_chars_incremental(
+    tx: &mut Transaction<'_, Sqlite>,
+    uid: &str,
+    bag: &CharBag,
+) -> Result<()> {
+    for &idx in bag.pending_chars().dirty() {
+        let Some(ch) = bag.chars.get(idx) else {
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO beyond_chars (
+                uid, char_index, template_id, level, exp, break_stage,
+                is_dead, hp, ultimate_sp, own_time
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(uid, char_index) DO UPDATE SET
+                template_id  = excluded.template_id,
+                level        = excluded.level,
+                exp          = excluded.exp,
+                break_stage  = excluded.break_stage,
+                is_dead      = excluded.is_dead,
+                hp           = excluded.hp,
+                ultimate_sp  = excluded.ultimate_sp,
+                own_time     = excluded.own_time",
+        )
+        .bind(uid)
+        .bind(idx as i64)
+        .bind(&ch.template_id)
+        .bind(ch.level as i64)
+        .bind(ch.exp as i64)
+        .bind(ch.break_stage as i64)
+        .bind(if ch.is_dead { 1i64 } else { 0i64 })
+        .bind(ch.hp)
+        .bind(ch.ultimate_sp as f64)
+        .bind(ch.own_time)
+        .execute(&mut **tx)
+        .await?;
+
+        // A dirty char might have had its skill map changed too.
+        // Skill changes are infrequent enough that re-upserting just
+        // this one char's skills (and pruning anything past the current
+        // map) is fine.
+        for (skill_id, skill_lv) in &ch.skill_levels {
+            sqlx::query(
+                "INSERT INTO beyond_char_skills
+                    (uid, char_index, skill_id, skill_level)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(uid, char_index, skill_id) DO UPDATE SET
+                    skill_level = excluded.skill_level",
+            )
+            .bind(uid)
+            .bind(idx as i64)
+            .bind(skill_id)
+            .bind(*skill_lv as i64)
+            .execute(&mut **tx)
+            .await?;
+        }
+        prune_char_skills_for_char(tx, uid, idx as i64, &ch.skill_levels).await?;
+    }
+
+    delete_chunked_i64(
+        tx,
+        "beyond_chars",
+        uid,
+        "char_index",
+        bag.pending_chars().removed().iter().map(|&i| i as i64),
+    )
+    .await?;
+    // ON DELETE CASCADE on beyond_char_skills cleans up orphan skills.
+    Ok(())
+}
+
+async fn write_teams_incremental(
+    tx: &mut Transaction<'_, Sqlite>,
+    uid: &str,
+    bag: &CharBag,
+) -> Result<()> {
+    for &idx in bag.pending_teams().dirty() {
+        let Some(team) = bag.teams.get(idx) else {
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO beyond_teams (uid, team_index, team_name, leader_char_index)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(uid, team_index) DO UPDATE SET
+                team_name         = excluded.team_name,
+                leader_char_index = excluded.leader_char_index",
+        )
+        .bind(uid)
+        .bind(idx as i64)
+        .bind(&team.name)
+        .bind(team.leader_index.as_usize() as i64)
+        .execute(&mut **tx)
+        .await?;
+
+        for (slot_idx, slot) in team.char_team.iter().enumerate() {
+            let char_idx: Option<i64> = slot.char_index().map(|c| c.as_usize() as i64);
+            sqlx::query(
+                "INSERT INTO beyond_team_slots
+                    (uid, team_index, slot_index, char_index)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(uid, team_index, slot_index) DO UPDATE SET
+                    char_index = excluded.char_index",
+            )
+            .bind(uid)
+            .bind(idx as i64)
+            .bind(slot_idx as i64)
+            .bind(char_idx)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+
+    delete_chunked_i64(
+        tx,
+        "beyond_teams",
+        uid,
+        "team_index",
+        bag.pending_teams().removed().iter().map(|&i| i as i64),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn write_weapons_incremental(
+    tx: &mut Transaction<'_, Sqlite>,
+    uid: &str,
+    bag: &CharBag,
+) -> Result<()> {
+    let depot = &bag.item_manager.weapons;
+    let pending = depot.pending();
+    let weapons = depot.all_weapons();
+
+    for inst_id in pending.dirty() {
+        let Some(w) = weapons.get(inst_id) else {
+            // Item was added and then removed in the same window. The
+            // removed-set carries the DELETE; nothing to upsert.
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO beyond_weapons (
+                uid, inst_id, template_id, exp, weapon_lv, refine_lv,
+                breakthrough_lv, equip_char_id, attach_gem_id,
+                is_lock, is_new, own_time
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(uid, inst_id) DO UPDATE SET
+                template_id      = excluded.template_id,
+                exp              = excluded.exp,
+                weapon_lv        = excluded.weapon_lv,
+                refine_lv        = excluded.refine_lv,
+                breakthrough_lv  = excluded.breakthrough_lv,
+                equip_char_id    = excluded.equip_char_id,
+                attach_gem_id    = excluded.attach_gem_id,
+                is_lock          = excluded.is_lock,
+                is_new           = excluded.is_new,
+                own_time         = excluded.own_time",
+        )
+        .bind(uid)
+        .bind(w.inst_id.as_u64() as i64)
+        .bind(&w.template_id)
+        .bind(w.exp as i64)
+        .bind(w.weapon_lv as i64)
+        .bind(w.refine_lv as i64)
+        .bind(w.breakthrough_lv as i64)
+        .bind(w.equip_char_id as i64)
+        .bind(w.attach_gem_id as i64)
+        .bind(if w.is_lock { 1i64 } else { 0i64 })
+        .bind(if w.is_new { 1i64 } else { 0i64 })
+        .bind(w.own_time)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    delete_chunked_i64(
+        tx,
+        "beyond_weapons",
+        uid,
+        "inst_id",
+        pending.removed().iter().map(|id| id.as_u64() as i64),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn write_gems_incremental(
+    tx: &mut Transaction<'_, Sqlite>,
+    uid: &str,
+    bag: &CharBag,
+) -> Result<()> {
+    let depot = &bag.item_manager.gems;
+    let pending = depot.pending();
+
+    for inst_id in pending.dirty() {
+        let Some(g) = depot.get(*inst_id) else {
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO beyond_gems (
+                uid, inst_id, template_id, craft_slot, attach_weapon_id,
+                is_lock, is_new, own_time
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(uid, inst_id) DO UPDATE SET
+                template_id      = excluded.template_id,
+                craft_slot       = excluded.craft_slot,
+                attach_weapon_id = excluded.attach_weapon_id,
+                is_lock          = excluded.is_lock,
+                is_new           = excluded.is_new,
+                own_time         = excluded.own_time",
+        )
+        .bind(uid)
+        .bind(g.inst_id.as_u64() as i64)
+        .bind(&g.template_id)
+        .bind(g.craft_slot as u32 as i64)
+        .bind(g.attach_weapon_id as i64)
+        .bind(if g.is_lock { 1i64 } else { 0i64 })
+        .bind(if g.is_new { 1i64 } else { 0i64 })
+        .bind(g.own_time)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    delete_chunked_i64(
+        tx,
+        "beyond_gems",
+        uid,
+        "inst_id",
+        pending.removed().iter().map(|id| id.as_u64() as i64),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn write_equips_incremental(
+    tx: &mut Transaction<'_, Sqlite>,
+    uid: &str,
+    bag: &CharBag,
+) -> Result<()> {
+    let depot = &bag.item_manager.equips;
+    let pending = depot.pending();
+
+    for inst_id in pending.dirty() {
+        let Some(e) = depot.get(*inst_id) else {
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO beyond_equips (
+                uid, inst_id, template_id, slot, equip_char_id,
+                is_lock, is_new, own_time
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(uid, inst_id) DO UPDATE SET
+                template_id   = excluded.template_id,
+                slot          = excluded.slot,
+                equip_char_id = excluded.equip_char_id,
+                is_lock       = excluded.is_lock,
+                is_new        = excluded.is_new,
+                own_time      = excluded.own_time",
+        )
+        .bind(uid)
+        .bind(e.inst_id.as_u64() as i64)
+        .bind(&e.template_id)
+        .bind(e.slot as u32 as i64)
+        .bind(e.equip_char_id as i64)
+        .bind(if e.is_lock { 1i64 } else { 0i64 })
+        .bind(if e.is_new { 1i64 } else { 0i64 })
+        .bind(e.own_time)
+        .execute(&mut **tx)
+        .await?;
+
+        for (attr_idx, attr) in e.attrs.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO beyond_equip_attrs (
+                    uid, inst_id, attr_index, attr_type, modifier_type, modifier_value
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(uid, inst_id, attr_index) DO UPDATE SET
+                    attr_type      = excluded.attr_type,
+                    modifier_type  = excluded.modifier_type,
+                    modifier_value = excluded.modifier_value",
+            )
+            .bind(uid)
+            .bind(e.inst_id.as_u64() as i64)
+            .bind(attr_idx as i64)
+            .bind(attr.attr_type as i64)
+            .bind(attr.modifier_type as i64)
+            .bind(attr.modifier_value)
+            .execute(&mut **tx)
+            .await?;
+        }
+        prune::prune_tail(
+            tx,
+            "beyond_equip_attrs",
+            uid,
+            "inst_id",
+            e.inst_id.as_u64() as i64,
+            "attr_index",
+            e.attrs.len(),
+        )
+        .await?;
+    }
+
+    delete_chunked_i64(
+        tx,
+        "beyond_equips",
+        uid,
+        "inst_id",
+        pending.removed().iter().map(|id| id.as_u64() as i64),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn write_stackables_incremental(
+    tx: &mut Transaction<'_, Sqlite>,
+    uid: &str,
+    bag: &CharBag,
+) -> Result<()> {
+    write_one_stackable_incremental(tx, uid, DEPOT_SPECIAL, &bag.item_manager.special_items)
+        .await?;
+    write_one_stackable_incremental(tx, uid, DEPOT_MISSION, &bag.item_manager.mission_items)
+        .await?;
+    write_one_stackable_incremental(tx, uid, DEPOT_FACTORY, &bag.item_manager.factory_items)
+        .await?;
+    Ok(())
+}
+
+async fn write_one_stackable_incremental(
+    tx: &mut Transaction<'_, Sqlite>,
+    uid: &str,
+    depot_type: i64,
+    depot: &perlica_logic::item::StackableDepot,
+) -> Result<()> {
+    let pending = depot.pending();
+
+    for template_id in pending.dirty() {
+        let count = depot.count_of(template_id);
+        if count == 0 {
+            // Reached zero between mark_dirty and flush - normalize to
+            // a delete so the row doesn't get re-written with count=0.
+            sqlx::query(
+                "DELETE FROM beyond_stackable_items
+                 WHERE uid = ?1 AND depot_type = ?2 AND template_id = ?3",
+            )
+            .bind(uid)
+            .bind(depot_type)
+            .bind(template_id)
+            .execute(&mut **tx)
+            .await?;
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO beyond_stackable_items (uid, depot_type, template_id, count)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(uid, depot_type, template_id) DO UPDATE SET
+                count = excluded.count",
+        )
+        .bind(uid)
+        .bind(depot_type)
+        .bind(template_id)
+        .bind(count as i64)
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    // Removed stackable rows are deleted explicitly (one DELETE per
+    // template_id; the volume is tiny because consume() only marks the
+    // template_ids that actually hit zero).
+    for template_id in pending.removed() {
+        sqlx::query(
+            "DELETE FROM beyond_stackable_items
+             WHERE uid = ?1 AND depot_type = ?2 AND template_id = ?3",
+        )
+        .bind(uid)
+        .bind(depot_type)
+        .bind(template_id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn delete_chunked_i64(
+    tx: &mut Transaction<'_, Sqlite>,
+    table: &str,
+    uid: &str,
+    pk_col: &str,
+    ids: impl IntoIterator<Item = i64>,
+) -> Result<()> {
+    let all: Vec<i64> = ids.into_iter().collect();
+    if all.is_empty() {
+        return Ok(());
+    }
+    const CHUNK: usize = 500;
+    for chunk in all.chunks(CHUNK) {
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!("DELETE FROM {table} WHERE uid = ?1 AND {pk_col} IN ({placeholders})");
+        let mut q = sqlx::query(&sql).bind(uid);
+        for &v in chunk {
+            q = q.bind(v);
         }
         q.execute(&mut **tx).await?;
     }

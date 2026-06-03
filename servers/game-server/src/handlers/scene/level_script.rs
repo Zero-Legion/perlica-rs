@@ -188,7 +188,10 @@ async fn maybe_drive_quest_progression<'a>(
 
     if did_advance {
         if let Err(e) = ctx.player.missions.persist(&ctx.player.uid, ctx.db).await {
-            debug!("Failed to persist missions after quest progression: uid={}, error={}", ctx.player.uid, e);
+            debug!(
+                "Failed to persist missions after quest progression: uid={}, error={}",
+                ctx.player.uid, e
+            );
         }
     }
 }
