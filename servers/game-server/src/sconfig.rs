@@ -13,7 +13,7 @@ pub struct Config {
     pub world_state: WorldState,
     pub default_team: DefaultTeamConfig,
     #[serde(default)]
-    pub muip: MuipGmConfig,
+    pub muip_gm: MuipGmConfig,
 }
 
 #[derive(Debug, Deserialize)]

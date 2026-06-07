@@ -28,8 +28,8 @@ async fn main() -> Result<(), error::ServerError> {
     let db = PlayerDb::open("saves").await?;
     let db: &'static PlayerDb = Box::leak(Box::new(db));
 
-    if cfg.muip.enabled {
-        let admin_addr = cfg.muip.addr();
+    if cfg.muip_gm.enabled {
+        let admin_addr = cfg.muip_gm.addr();
         tokio::spawn(async move {
             if let Err(error) = gm::run_gm_listener(admin_addr, registry).await {
                 error!("MUIP GM listener failed: {}", error);
