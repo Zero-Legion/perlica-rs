@@ -218,7 +218,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           awk "/^## \[${VERSION}\]/{found=1; next} found && /^## /{exit} found{print}" \
-            CHANGELOG.md > release_notes.md
+            changelog.md > release_notes.md
           if [ ! -s release_notes.md ]; then
             echo "No changelog entry found for ${VERSION}" > release_notes.md
           fi
