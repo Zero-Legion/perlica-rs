@@ -99,7 +99,7 @@ fn cell_key(x: f32, z: f32, cell_size: f32) -> (i32, i32) {
 mod tests {
     use super::*;
 
-    //
+    ////
     #[test]
     fn empty_grid() {
         let grid = SpatialGrid::build(std::iter::empty(), 20.0);
